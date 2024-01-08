@@ -88,11 +88,14 @@ class DiscreteGradientPromptSearch():
             sampled_idx = torch.multinomial(score_normalized.cpu(), num_candidates, replacement=replacement).tolist()
         return sampled_idx
     
-    def save(self, population_template, cpt_iteration, savepath):
+    def save(self, population_template, cpt_iteration, savepath, same_pred=False):
         with open(savepath, 'a') as f_out:
             population_set = list(set(population_template))
             population_set.sort(reverse=True, key=lambda x:x[1])
-            savelines = '\n'.join([f'{cpt_iteration}\t{d[2]}\t[START-TEMPLATE]{d[0]}[END-TEMPLATE]\t{d[1]:.2f}' for d in population_set])+'\n'
+            if same_pred: # add another col
+                savelines = '\n'.join([f'{cpt_iteration}\t{d[2]}\t[START-TEMPLATE]{d[0]}[END-TEMPLATE]\t{d[1]:.2f}\t{d[3]:.2f}' for d in population_set])+'\n'
+            else:
+                savelines = '\n'.join([f'{cpt_iteration}\t{d[2]}\t[START-TEMPLATE]{d[0]}[END-TEMPLATE]\t{d[1]:.2f}' for d in population_set])+'\n'
             f_out.write(savelines)
 
     def deduplicate_templates(self, template_candidates):
@@ -286,7 +289,8 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
     def __init__(self, model: CausalLanguageModel, num_candidates, mode) -> None:
         super().__init__(model, 1, num_candidates, n_rounds=1)
         self.mode = mode # hot, neutral
-        self.topk_templates=25
+        self.topk_template=10
+        self.n_tkn_generated=1
 
     def search(self, human_templates, savepath, lamaset, relation, batch_size):
         """
@@ -298,7 +302,7 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
         human_templates = [(t, None, f'R-{t_id}') for t_id, t in enumerate(human_templates)]
 
         # first, eval the initial population
-        human_templates, df_human = self.evaluate_candidates(human_templates, lamaset, relation, batch_size, 2, return_pred=True)
+        human_templates, df_human = self.evaluate_candidates(human_templates, lamaset, relation, batch_size, self.n_tkn_generated, return_pred=True)
         
         # filter to only keep template with accuracy > 10
         human_templates = [h for h in human_templates if h[1]>0.1]
@@ -314,7 +318,7 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
 
         for (human, h_score, h_tid) in human_templates:
 
-            self.save([(human, h_score, h_tid),], h_tid, savepath)
+            self.save([(human, h_score, h_tid, 1.0),], h_tid, savepath, same_pred=True)
 
             tokenized_template, filled_data = lamaset.fill_template_and_tokenize(relation, human, self.model.tokenizer, set='train')
             batches = [filled_data[i:i+batch_size] for i in range(0,len(filled_data),batch_size)]
@@ -368,12 +372,12 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
                         except TypeError: # can happens if something goes wrong with the tokenizer
                             continue # skip it
 
-            candidates_templates, df_candidates = self.evaluate_candidates(candidates_templates, lamaset, relation, batch_size, 2, return_pred=True)
-
+            candidates_templates, df_candidates = self.evaluate_candidates(candidates_templates, lamaset, relation, batch_size, self.n_tkn_generated, return_pred=True)
             # compare each candidate's predictions with the human template prediction:
-            df_candidates['human_pred'] = df_candidates.apply(lambda r: df_human[df_human['label']==r['label']][df_human['subject']==r['subject']]['pred'].item(), axis=1)
+            df_candidates['human_pred'] = df_candidates.apply(lambda r: df_human[(df_human['tid'].isin([h_tid,])) & (df_human['label'].isin([r['label']])) & (df_human['subject'].isin([r['subject']]))]['pred'].item(), axis=1)
             df_candidates['same_pred'] = df_candidates['human_pred'] == df_candidates['pred']
-            candidates_templates = [(d[0], d[2], d[3], d[1]) for d in df_candidates.groupby(['template','tid'])[['correct', 'same_pred']].mean().reset_index().values.tolist()]
+            candidates_templates = [(d[0], d[2], d[1], d[3]) for d in df_candidates.groupby(['template','tid'])[['correct', 'same_pred']].mean().reset_index().values.tolist()]
+            
             # filter
             if self.mode=='hot':
                 candidates_templates.sort(reverse=True, key=lambda x:x[1])
@@ -382,7 +386,7 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
             candidates_templates = candidates_templates[:self.topk_template]
             # print and save
             self.print_population(candidates_templates)
-            self.save(candidates_templates, h_tid, savepath)
+            self.save(candidates_templates, h_tid, savepath, same_pred=True)
 
 class EvoMachinePrompt():
     def __init__(self, mutate_function, crossover_function, fitness_function) -> None:

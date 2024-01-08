@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument('--n_population', type=int, default=50)
     parser.add_argument('--num_candidates', type=int, default=5)
     parser.add_argument('--relation', type=str, default='all')
+    parser.add_argument('--mode', type=str, default='hot')
 
     args = parser.parse_args()
     print(args)
@@ -74,14 +75,14 @@ if __name__ == "__main__":
 
 
     # initialise the algo
-    oneTokSearch = OneTokenGradientPromptSearch(model, 2, mode='hot')
+    oneTokSearch = OneTokenGradientPromptSearch(model, args.num_candidates, mode=args.mode)
     for relation in relations: # in the future, run all relation in parallel in different scrips
-        initial_template = [paraphrases[relation][0],]
+        initial_template = paraphrases[relation]
         """
         dataset is a list of tuple [(X,Y), ...]
         where X is used to fill in the template and Y is the expected next token.
         """
-        savepath = os.path.join(args.output,f'one-tok-search_{model_name_parse}_{relation}_{random_seed}.tsv') 
+        savepath = os.path.join(args.output,f'one-tok-search-{args.mode}_{model_name_parse}_{relation}_{random_seed}.tsv') 
         oneTokSearch.search(initial_template, savepath, lamaset, relation, args.batch_size)
 
     exit()

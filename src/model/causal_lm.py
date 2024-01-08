@@ -4,13 +4,22 @@ import logging
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Callable
 
+HF_TOKEN_LLAMA2='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'
 
 class CausalLanguageModel:
     def __init__(self, model_name, device="cpu", fast_tkn=True, fp16=True, padding_side='right'):
         self.device = torch.device(device)
         self.model_name = model_name
         self.tokenizer = self.prepare_tokenizer(model_name, fast_tkn, padding_side=padding_side)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16 if fp16 else torch.float32).to(self.device)
+        if 'llama' in model_name:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                trust_remote_code="true",
+                torch_dtype=torch.float16 if fp16 else torch.float32,
+                use_auth_token=HF_TOKEN_LLAMA2
+            ).to(self.device)
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16 if fp16 else torch.float32).to(self.device)
         # print(self.model)
         self.layer_act = self.get_act_fn()
 
@@ -181,7 +190,18 @@ class CausalLanguageModel:
 
 
     def prepare_tokenizer(self, model_name, fast_tkn, padding_side):
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=fast_tkn, padding_side=padding_side)
+        if 'llama' in model_name:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name, 
+                use_fast=fast_tkn,
+                # legacy=True,
+                token=HF_TOKEN_LLAMA2,
+                padding_side=padding_side
+            )
+            # bos_id = tokenizer.bos_token_id
+            # tokenizer.pad_token_id = bos_id
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=fast_tkn, padding_side=padding_side)
         tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
         return tokenizer
 
