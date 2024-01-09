@@ -78,7 +78,28 @@ class CausalLanguageModel:
         logits = output.logits
         probabilities = logits.softmax(dim=-1)
         return probabilities
-    
+
+    def compute_ppl_from_text_batch(self, input_text):
+        encodings = self.tokenizer(input_text, padding=True, return_tensors='pt').to(self.device)
+        input_ids = encodings.input_ids
+        attention_mask = encodings.attention_mask
+        target_ids = input_ids.clone()
+        target_ids = torch.where(target_ids==self.tokenizer.pad_token_id, 0, target_ids) # ignore padding tokens
+        # shift targets, as each position predicts the next token
+        target_ids = shift_batch_tensor(target_ids)
+        mask = 1 * target_ids.eq(0) # 1 means the position has to be masked
+        mask[:, -1] = 1 # do not compute the loss on the last token as we don't know what is the next token
+
+        with torch.no_grad():
+            outputs = self.model(input_ids, attention_mask)
+            logits = outputs.logits
+            loss = nll(logits, target_ids)
+            # mask padding tokens + average over valid tokens
+            loss = (loss * (1-mask)).sum(-1) / (1-mask).sum(-1)
+
+        ppl = torch.exp(loss.float()).to('cpu')        
+        return ppl
+
     def enable_output_hidden_states(self):
         self.model.config.output_hidden_states=True
 
@@ -128,6 +149,8 @@ class CausalLanguageModel:
             vocab = list(self.tokenizer.encoder)
         elif 'pythia' in self.model_name:
             vocab = self.tokenizer.vocab
+        elif 'mistral' in self.model_name:
+            vocab = list(self.tokenizer.vocab)
         else:
             vocab = self.tokenizer.vocab
         return vocab
@@ -141,6 +164,8 @@ class CausalLanguageModel:
             embeddings = self.model.model.decoder.embed_tokens
         elif 'pythia' in self.model_name:
             embeddings = self.model.gpt_neox.embed_in
+        elif 'mistral' in self.model_name:
+            embeddings = self.model.model.embed_tokens
         else:
             embeddings = self.model.gpt_neox.embed_in
         return embeddings
@@ -150,6 +175,8 @@ class CausalLanguageModel:
             layers = self.model.model.decoder.layers
         elif 'pythia' in self.model_name:
             layers = self.model.gpt_neox.layers 
+        elif 'mistral' in self.model_name:
+            layers = self.model.model.layers 
         else:
             layers = self.model.gpt_neox.layers
         return layers
@@ -178,6 +205,8 @@ class CausalLanguageModel:
             act_str = self.model.model.config.activation_function
         elif 'pythia' in self.model_name:
             act_str = self.model.config.hidden_act
+        elif 'mistral' in self.model_name:
+            act_str = self.model.config.hidden_act
         else: # default
             act_str = 'relu'
         
@@ -185,6 +214,8 @@ class CausalLanguageModel:
             return torch.nn.ReLU()
         elif act_str == 'gelu':
             return torch.nn.GELU()
+        elif act_str == 'silu':
+            return torch.nn.SiLU()
         else: # relu by default
             return torch.nn.GELU()
 
@@ -209,6 +240,15 @@ class CausalLanguageModel:
         inputs = self.tokenizer(text, return_tensors="pt")
         tokens = self.model.generate(**inputs.to(self.device))
         return self.tokenizer.decode(tokens[0])
+
+def nll(logits, label_ids):
+    label_ids = label_ids.unsqueeze(-1)
+    predict_logp = F.log_softmax(logits, dim=-1)
+    target_logp = predict_logp.gather(-1, label_ids)
+    return -target_logp.squeeze()
+
+def shift_batch_tensor(t):
+    return torch.concat([t[:,1:], t[:,0].unsqueeze(-1)], dim=1)
 
 if __name__ == "__main__":
     # Example usage

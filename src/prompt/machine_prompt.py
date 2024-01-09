@@ -167,9 +167,10 @@ class DiscreteGradientPromptSearch():
         return population_template
 
     def print_population(self, population_template):
-        population_template.sort(reverse=True, key=lambda x:x[1])
-        msg = '\n'.join([f'[{d[2]}] T:__{d[0]}__. S:{d[1]:.2f}' for d in population_template[:self.topk_display]])
-        print(f'[INITIAL POPULATION]:\n'+msg)
+        if self.verbose:
+            population_template.sort(reverse=True, key=lambda x:x[1])
+            msg = '\n'.join([f'[{d[2]}] T:__{d[0]}__. S:{d[1]:.2f}' for d in population_template[:self.topk_display]])
+            print(f'[INITIAL POPULATION]:\n'+msg)
 
 
     def new_generation(self, population_template, p_flip, lamaset, relation, batch_size, cpt_iteration, template_count):
@@ -286,17 +287,19 @@ class DiscreteGradientPromptSearch():
         return population_template
 
 class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
-    def __init__(self, model: CausalLanguageModel, num_candidates, mode) -> None:
+    def __init__(self, model: CausalLanguageModel, num_candidates, mode, verbose=False) -> None:
         super().__init__(model, 1, num_candidates, n_rounds=1)
         self.mode = mode # hot, neutral
         self.topk_template=10
         self.n_tkn_generated=1
+        self.verbose = verbose
 
-    def search(self, human_templates, savepath, lamaset, relation, batch_size):
+    def search(self, human_templates, savepath, lamaset, relation, batch_size, only_best_human=False):
         """
         dataset is a list of tuple [(X,Y), ...]
         where X is used to fill in the template and Y is the expected next token.
         """
+        all_templates  = []
 
         # Initialise the population with human templates
         human_templates = [(t, None, f'R-{t_id}') for t_id, t in enumerate(human_templates)]
@@ -306,8 +309,13 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
         
         # filter to only keep template with accuracy > 10
         human_templates = [h for h in human_templates if h[1]>0.1]
-        
+
+        if only_best_human:
+            human_templates.sort(reverse=True, key=lambda x:x[1])
+            human_templates = [human_templates[0], ]
+
         self.print_population(human_templates)
+        all_templates += [ht+(1.0,) for ht in human_templates] # +1 to keep track of the agreement with the human template.
 
         if len(human_templates)==0:
             logging.warning('[One token search] No human template is accurate enough. Stop.')
@@ -318,7 +326,8 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
 
         for (human, h_score, h_tid) in human_templates:
 
-            self.save([(human, h_score, h_tid, 1.0),], h_tid, savepath, same_pred=True)
+            if savepath is not None:
+                self.save([(human, h_score, h_tid, 1.0),], h_tid, savepath, same_pred=True)
 
             tokenized_template, filled_data = lamaset.fill_template_and_tokenize(relation, human, self.model.tokenizer, set='train')
             batches = [filled_data[i:i+batch_size] for i in range(0,len(filled_data),batch_size)]
@@ -366,7 +375,7 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
                         temp = tokenized_template.copy()
                         temp[idx_tkn] = token_candidate
                         try:
-                            temp_text = '[X] '+self.model.tokenizer.decode(temp)+ ' [Y]'
+                            temp_text = '[X]'+self.model.tokenizer.decode(temp)+ ' [Y]'
                             tcpt += 1 # increase template count
                             candidates_templates.append((temp_text, None, f'{h_tid}-{tcpt}')) # (text_template, score)
                         except TypeError: # can happens if something goes wrong with the tokenizer
@@ -374,10 +383,10 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
 
             candidates_templates, df_candidates = self.evaluate_candidates(candidates_templates, lamaset, relation, batch_size, self.n_tkn_generated, return_pred=True)
             # compare each candidate's predictions with the human template prediction:
-            df_candidates['human_pred'] = df_candidates.apply(lambda r: df_human[(df_human['tid'].isin([h_tid,])) & (df_human['label'].isin([r['label']])) & (df_human['subject'].isin([r['subject']]))]['pred'].item(), axis=1)
+            df_candidates['human_pred'] = df_candidates.apply(lambda r: df_human[(df_human['tid'].isin([h_tid,])) & (df_human['label'].isin([r['label']])) & (df_human['subject'].isin([r['subject']]))]['pred'].sample(1).item(), axis=1)
             df_candidates['same_pred'] = df_candidates['human_pred'] == df_candidates['pred']
             candidates_templates = [(d[0], d[2], d[1], d[3]) for d in df_candidates.groupby(['template','tid'])[['correct', 'same_pred']].mean().reset_index().values.tolist()]
-            
+            all_templates += candidates_templates
             # filter
             if self.mode=='hot':
                 candidates_templates.sort(reverse=True, key=lambda x:x[1])
@@ -386,7 +395,11 @@ class OneTokenGradientPromptSearch(DiscreteGradientPromptSearch):
             candidates_templates = candidates_templates[:self.topk_template]
             # print and save
             self.print_population(candidates_templates)
-            self.save(candidates_templates, h_tid, savepath, same_pred=True)
+            if savepath is not None:
+                self.save(candidates_templates, h_tid, savepath, same_pred=True)
+            
+        all_templates = set(all_templates)
+        return all_templates, df_human, df_candidates
 
 class EvoMachinePrompt():
     def __init__(self, mutate_function, crossover_function, fitness_function) -> None:
