@@ -14,9 +14,16 @@ class LAMAset:
     
     def lamaset_per_relation(self, relation):
         dataset_rel = self.dataset[self.dataset['predicate_id']==relation]
-        info_rel = self.info[self.info['relation']==relation]
+        info_rel = self.info[self.info['relation']==relation]['sub_label', 'obj_label']
 
         return dataset_rel, info_rel
+    
+    def sample_relation(self, relation, set, n):
+        this_set = self.dataset[self.dataset['set']==set]
+        this_rel = this_set[this_set['predicate_id']==relation]
+        samples = this_rel.sample(n)[['sub_label', 'obj_label']].values.tolist()
+        return samples
+
 
     def preprocess(self, balance=True, no_overlap=True):
         """

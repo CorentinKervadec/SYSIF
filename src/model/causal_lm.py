@@ -49,6 +49,7 @@ class CausalLanguageModel:
         for l_idx in range(n_layers):
             # process
             print('')
+
         return None
 
     def forward_pass_from_text(self, input_text):
@@ -78,6 +79,61 @@ class CausalLanguageModel:
         logits = output.logits
         probabilities = logits.softmax(dim=-1)
         return probabilities
+
+    def get_intermediate_mlp_output(self, input_text, stride=2):
+        """
+        does not work with batching
+        """
+        all_intermediate_out = []
+        self.enable_output_hidden_states()
+        output = self.forward_pass_nograd(input_text)[0]
+        n_layers = self.get_nb_layers()
+        iterator_list = [l_idx for l_idx in range(0,n_layers,stride)]
+        if iterator_list[-1] != (n_layers-1): # make sure that the last layer is considered
+            iterator_list.append(n_layers-1)
+        for l_idx in range(0,n_layers,stride):
+            intermediate_output = output.hidden_states[l_idx+1].squeeze()[-1].detach() # +1 because the first is the embedding / squeeze because we are not batching
+            intermediate_logit = unembed(intermediate_output)
+            intermediate_argmax = torch.argmax(intermediate_logit, dim=-1)
+            # intermediate_prob = torch.softmax(intermediate_logit, dim=-1)
+            intermediate_pred = self.tokenizer.decode(intermediate_argmax)
+            all_intermediate_pred.append(intermediate_pred)
+            all_intermediate_rep.append(intermediate_output.cpu())
+        all_intermediate_pred = '\t'.join(all_intermediate_pred)
+        all_intermediate_rep = torch.stack(all_intermediate_rep)
+        return all_intermediate_out
+
+
+    def get_intermediate_output(self, input_text, stride=1):
+        """
+        does not work with batching
+        """
+        all_intermediate_pred = []
+        all_intermediate_rep = []
+        all_intermediate_prob = []
+        all_activations = []
+        unembed = self.get_unembed()
+        self.enable_output_hidden_states()
+        output = self.forward_pass_nograd(input_text)[0]
+        n_layers = self.get_nb_layers()
+        iterator_list = [l_idx for l_idx in range(0,n_layers,stride)]
+        if iterator_list[-1] != (n_layers-1): # make sure that the last layer is considered
+            iterator_list.append(n_layers-1)
+        for l_idx in range(0,n_layers,stride):
+            intermediate_output = output.hidden_states[l_idx+1].squeeze()[-1].detach() # +1 because the first is the embedding / squeeze because we are not batching
+            intermediate_logit = unembed(intermediate_output)
+            intermediate_argmax = torch.argmax(intermediate_logit, dim=-1)
+            intermediate_prob = torch.softmax(intermediate_logit, dim=-1)
+            intermediate_pred = self.tokenizer.decode(intermediate_argmax)
+            all_intermediate_pred.append(intermediate_pred)
+            all_intermediate_rep.append(intermediate_output.cpu())
+            all_intermediate_prob.append(intermediate_prob.cpu())
+            all_activations.append(self.kn_act_buffer[l_idx][-1].detach().clone())
+        all_intermediate_pred = '\t'.join(all_intermediate_pred)
+        all_intermediate_rep = torch.stack(all_intermediate_rep)
+        all_intermediate_prob = torch.stack(all_intermediate_prob)
+        all_activations = torch.stack(all_activations)
+        return all_intermediate_pred, all_intermediate_prob, all_intermediate_rep, all_activations
 
     def compute_ppl_from_text_batch(self, input_text):
         encodings = self.tokenizer(input_text, padding=True, return_tensors='pt').to(self.device)
@@ -115,12 +171,25 @@ class CausalLanguageModel:
         for lid, layer in enumerate(layers):
             self.get_knowledge_neurons(lid).register_forward_hook(self.save_kn_act_hook(lid))
         return self.kn_act_buffer
+    
+    def enable_output_mlp_out(self):
+        # define the tensor where the activation will be stored
+        layers = self.get_layers()
+        n_layers = len(layers)
+        self.kn_act_buffer={lid: torch.empty(0) for lid in range(n_layers)}
+        # Setting a hook for saving FFN intermediate output
+        for lid, layer in enumerate(layers):
+            self.get_mlp_out(lid).register_forward_hook(self.save_kn_act_hook(lid, activation=False))
+        return self.kn_act_buffer
 
-    def save_kn_act_hook(self, layer) -> Callable:
+    def save_kn_act_hook(self, layer, activation=True) -> Callable:
         def fn(_, __, output):
             before_act = output.detach()
-            after_act = self.layer_act(before_act) # apply activation
-            self.kn_act_buffer[layer] = after_act.cpu()
+            if activation:
+                after_act = self.layer_act(before_act) # apply activation
+                self.kn_act_buffer[layer] = after_act.cpu()
+            else:
+                self.kn_act_buffer[layer] = before_act.cpu()
         return fn   
 
     # def get_attention_maps(self, input_text):
@@ -194,6 +263,16 @@ class CausalLanguageModel:
             kn = layers[layer_id].fc1
         return kn
     
+    def get_mlp_out(self, layer_id):
+        layers = self.get_layers()
+        if 'opt' in self.model_name:
+            kn = layers[layer_id].fc2
+        elif 'pythia' in self.model_name:
+            kn = None # TODO layers[layer_id].mlp.dense_h_to_4h
+        else:
+            kn = layers[layer_id].fc2
+        return kn
+      
     def get_nb_knowledge_neurons(self, layer_id=None):
         if layer_id is not None:
             return self.get_knowledge_neurons(layer_id).out_features
@@ -219,6 +298,17 @@ class CausalLanguageModel:
         else: # relu by default
             return torch.nn.GELU()
 
+    def get_unembed(self):
+        if 'opt' in self.model_name:
+            unembed = self.model.lm_head
+        elif 'pythia' in self.model_name:
+            act_str = self.model.embed_out
+        elif 'mistral' in self.model_name:
+            #todo
+            return None
+        else: # default
+            return None
+        return unembed
 
     def prepare_tokenizer(self, model_name, fast_tkn, padding_side):
         if 'llama' in model_name:
