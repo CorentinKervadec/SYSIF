@@ -459,7 +459,7 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
         # evaluate
         if return_prob:
             df_candidates['probs'] = prob_list
-            df_candidates['gt_prob'] = df_candidates.apply(lambda row: row['probs'][self.model.tokenizer.encode(row['label'])[0]], axis=1)  # get the prob associated to the groundtruth
+            df_candidates['gt_prob'] = df_candidates.apply(lambda row: row['probs'][self.model.tokenizer.encode(row['label'], add_special_tokens=False)[0]], axis=1)  # get the prob associated to the groundtruth
             population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['gt_prob'].mean().reset_index().values.tolist()]\
                         + [t for t in template_candidates if t[1] is not None]
         else:
@@ -469,7 +469,7 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
         # todo: use a more balanced metric like below
         # result = df_candidates.groupby(['template','tid','label']).mean('correct').groupby(['template','tid']).mean().reset_index().values.tolist()
 
-
+        print(df_candidates)
         # redupplicate
         population_template = self.reduplicate_templates(population_template, population_template_undup_count)
         
@@ -496,7 +496,7 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
                 tokenized_template = self.model.tokenizer.encode(machine_template.replace('[X]', '').replace(' [Y]', '').strip(), add_special_tokens=False)
             else:
                 tokenized_template = self.model.tokenizer.encode(machine_template.replace('[X]', '').replace(' [Y]', '').strip(), add_special_tokens=False)
-                filled_data = [(self.model.tokenizer.encode(subj), tokenized_template, self.model.tokenizer.encode(' '+obj, add_special_tokens=False)) for subj, obj in target_pairs]
+                filled_data = [(self.model.tokenizer.encode(subj), tokenized_template, self.model.tokenizer.encode(obj, add_special_tokens=False)) for subj, obj in target_pairs]
                 batches = [filled_data[i:i+batch_size] for i in range(0,len(filled_data),batch_size)]
                 accu_template_gradient = None
                 for batch in batches:
