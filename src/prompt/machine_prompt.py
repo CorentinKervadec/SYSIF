@@ -463,7 +463,7 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
                 df_candidates['gt_prob'] = df_candidates.apply(lambda row: row['probs'][self.model.tokenizer.encode(row['label'], add_special_tokens=False)[0]], axis=1)  # get the prob associated to the groundtruth
                 population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['gt_prob'].mean().reset_index().values.tolist()]\
                             + [t for t in template_candidates if t[1] is not None]
-                print(df_candidates[['prompt', 'label', 'pred', 'gt_prob']])
+                print(df_candidates[['label', 'pred', 'gt_prob']])
             else:
                 df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)  
                 population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['correct'].mean().reset_index().values.tolist()]\
