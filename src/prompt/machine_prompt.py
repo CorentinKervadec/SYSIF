@@ -427,49 +427,50 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
         template_candidates, population_template_undup_count = self.deduplicate_templates(template_candidates)
         # select those which have to be evaluated
         template_to_evaluate = [(t[0], t[2]) for t in template_candidates if t[1] is None]
-        # construct the prompts
-        df_candidates = []
-        for (this_template, tid) in template_to_evaluate:
-            df_temp = pd.DataFrame()
-            df_temp['prompt'] = [this_template.replace('[X]', pair[0]).replace(' [Y]', '').strip() for pair in target_pairs]
-            df_temp['label'] = [pair[1] for pair in target_pairs]
-            df_temp['subject'] = [pair[0] for pair in target_pairs]
-            df_temp['tid'] = [tid,] * len(df_temp)
-            # df_temp['relation'] = [relation,] * len(df_temp)
-            df_temp['template'] = [this_template,] * len(df_temp)
-            df_candidates.append(df_temp)
-        df_candidates = pd.concat(df_candidates)
-        # foward pass: feed prompts to the LM and gather predictions
-        prompt_list = df_candidates['prompt'].values.tolist()
-        pred_list = []
-        prob_list = []
-        batches, n_batches = batchify(prompt_list, batch_size, drop_last=False, output_text=True)
-        for batch in tqdm(batches, desc="[EVALUATION]"):
-            if return_prob: #only compute the loss
-                output, attention_mask = self.model.forward_pass_nograd(batch, tokenize=True)
-                pred_logit = output.logits[:,-1]
-                pred_prob = torch.softmax(pred_logit, dim=-1).tolist()
-                text_generated = [self.model.tokenizer.decode(t) for t in torch.argmax(pred_logit, dim=-1)]
-                
-                prob_list += pred_prob
+        if len(template_to_evaluate)>0:
+            # construct the prompts
+            df_candidates = []
+            for (this_template, tid) in template_to_evaluate:
+                df_temp = pd.DataFrame()
+                df_temp['prompt'] = [this_template.replace('[X]', pair[0]).replace(' [Y]', '').strip() for pair in target_pairs]
+                df_temp['label'] = [pair[1] for pair in target_pairs]
+                df_temp['subject'] = [pair[0] for pair in target_pairs]
+                df_temp['tid'] = [tid,] * len(df_temp)
+                # df_temp['relation'] = [relation,] * len(df_temp)
+                df_temp['template'] = [this_template,] * len(df_temp)
+                df_candidates.append(df_temp)
+            df_candidates = pd.concat(df_candidates)
+            # foward pass: feed prompts to the LM and gather predictions
+            prompt_list = df_candidates['prompt'].values.tolist()
+            pred_list = []
+            prob_list = []
+            batches, n_batches = batchify(prompt_list, batch_size, drop_last=False, output_text=True)
+            for batch in tqdm(batches, desc="[EVALUATION]"):
+                if return_prob: #only compute the loss
+                    output, attention_mask = self.model.forward_pass_nograd(batch, tokenize=True)
+                    pred_logit = output.logits[:,-1]
+                    pred_prob = torch.softmax(pred_logit, dim=-1).tolist()
+                    text_generated = [self.model.tokenizer.decode(t) for t in torch.argmax(pred_logit, dim=-1)]
+                    
+                    prob_list += pred_prob
+                else:
+                    text_generated = self.model.generate_tokens_from_text_batch(batch, n_tokens=n_generated_tokens)
+                pred_list += text_generated
+            df_candidates['pred'] = pred_list
+            # evaluate
+            if return_prob:
+                df_candidates['probs'] = prob_list
+                df_candidates['gt_prob'] = df_candidates.apply(lambda row: row['probs'][self.model.tokenizer.encode(row['label'], add_special_tokens=False)[0]], axis=1)  # get the prob associated to the groundtruth
+                population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['gt_prob'].mean().reset_index().values.tolist()]\
+                            + [t for t in template_candidates if t[1] is not None]
+                print(df_candidates[['prompt', 'label', 'pred', 'gt_prob']])
             else:
-                text_generated = self.model.generate_tokens_from_text_batch(batch, n_tokens=n_generated_tokens)
-            pred_list += text_generated
-        df_candidates['pred'] = pred_list
-        # evaluate
-        if return_prob:
-            df_candidates['probs'] = prob_list
-            df_candidates['gt_prob'] = df_candidates.apply(lambda row: row['probs'][self.model.tokenizer.encode(row['label'], add_special_tokens=False)[0]], axis=1)  # get the prob associated to the groundtruth
-            population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['gt_prob'].mean().reset_index().values.tolist()]\
-                        + [t for t in template_candidates if t[1] is not None]
-            print(df_candidates[['prompt', 'label', 'pred', 'gt_prob']])
-        else:
-            df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)  
-            population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['correct'].mean().reset_index().values.tolist()]\
-                        + [t for t in template_candidates if t[1] is not None]
-            print(df_candidates[['prompt', 'label', 'pred', 'correct']])
-        # todo: use a more balanced metric like below
-        # result = df_candidates.groupby(['template','tid','label']).mean('correct').groupby(['template','tid']).mean().reset_index().values.tolist()
+                df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)  
+                population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['correct'].mean().reset_index().values.tolist()]\
+                            + [t for t in template_candidates if t[1] is not None]
+                print(df_candidates[['prompt', 'label', 'pred', 'correct']])
+            # todo: use a more balanced metric like below
+            # result = df_candidates.groupby(['template','tid','label']).mean('correct').groupby(['template','tid']).mean().reset_index().values.tolist()
 
         # redupplicate
         population_template = self.reduplicate_templates(population_template, population_template_undup_count)
