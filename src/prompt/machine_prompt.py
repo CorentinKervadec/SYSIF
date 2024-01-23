@@ -595,7 +595,7 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
                         del self.mem_template_info[t]
             
             # evaluate accuracy
-            if cpt_iteration%5==0:
+            if cpt_iteration%5==0 or (not not_finished):
                 evaluated_population = [(t[0], None, t[2]) for t in population_template] # put none into score, to be sure that the score will be computed
                 evaluated_population = self.evaluate_candidates(evaluated_population, target_pairs, batch_size, self.n_tkn_generated, return_prob=False)
                 self.print_population(evaluated_population)
