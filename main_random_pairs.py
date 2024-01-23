@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument('--num_candidates', type=int, default=5)
     parser.add_argument('--template_len', type=int, default=5)
     parser.add_argument('--n_pairs', type=int, default=1)
+    parser.add_argument('--n_searches', type=int, default=1)
 
 
 
@@ -60,12 +61,26 @@ if __name__ == "__main__":
         padding_side='left')
     model_name_parse = model_name.split('/')[-1]
 
+    # output file
+    savepath = os.path.join(args.output,f'random-pairs-prompt-search_{model_name_parse}_p{args.n_pairs}_t{args.template_len}_{random_seed}.tsv')
+    with open(savepath, 'w') as f_out:
+        savelines = f'source\ttarget\tcpt_iteration\tbest_prompt\ttemplate\tscore\n'
+        f_out.write(savelines)
+
     # initialise the search algo
-    promptSearch = RandomPairPromptSearch(model, 50, args.num_candidates, n_rounds=2, verbose=True)
+    promptSearch = RandomPairPromptSearch(model, args.n_population, args.num_candidates, n_rounds=2, verbose=True)
 
-    target_pairs = [(model.tokenizer.decode(random.randint(0, model.get_vocab_size()-1)), 
-                     model.tokenizer.decode(random.randint(0, model.get_vocab_size()-1))) for _ in range (args.n_pairs)]
-    print(target_pairs)
 
-    all_population_template = promptSearch.train(template_len=args.template_len, target_pairs=target_pairs, n_iterations_max=999, batch_size=args.batch_size, savepath=None)
-    print(all_population_template)
+    for i in range(args.n_searches):
+        target_pairs = [(model.tokenizer.decode(random.randint(0, model.get_vocab_size()-1)), 
+                        model.tokenizer.decode(random.randint(0, model.get_vocab_size()-1))) for _ in range (args.n_pairs)]
+        print(target_pairs)
+
+        all_population_template, cpt_iteration = promptSearch.train(template_len=args.template_len, target_pairs=target_pairs, n_iterations_max=args.n_iterations_max, batch_size=args.batch_size, savepath=None)
+        best_prompt = all_population_template[0]
+        print(best_prompt)
+        #write into file
+        if savepath is not None:
+            with open(savepath, 'a') as f_out:
+                savelines = f'{target_pairs[0]}\t{target_pairs[1]}\t{cpt_iteration}\t{best_prompt[2]}\t[START-TEMPLATE]{best_prompt[0]}[END-TEMPLATE]\t{best_prompt[1]:.2f}\n'
+                f_out.write(savelines)
