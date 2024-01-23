@@ -471,10 +471,12 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
                 # print(df_candidates[['prompt', 'label', 'pred', 'correct']])
             # todo: use a more balanced metric like below
             # result = df_candidates.groupby(['template','tid','label']).mean('correct').groupby(['template','tid']).mean().reset_index().values.tolist()
+            # redupplicate    
+        else:
+            population_template = template_candidates
 
-        # redupplicate
         population_template = self.reduplicate_templates(population_template, population_template_undup_count)
-        
+
         if return_pred:
             return population_template, df_candidates
         else:
