@@ -432,7 +432,7 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
             df_candidates = []
             for (this_template, tid) in template_to_evaluate:
                 df_temp = pd.DataFrame()
-                df_temp['prompt'] = [this_template.replace('[X]', pair[0]).replace(' [Y]', '').strip() for pair in target_pairs]
+                df_temp['prompt'] = [this_template.replace('[X]', pair[0]).replace(' [Y]', '') for pair in target_pairs] # here, I removed strip()
                 df_temp['label'] = [pair[1] for pair in target_pairs]
                 df_temp['subject'] = [pair[0] for pair in target_pairs]
                 df_temp['tid'] = [tid,] * len(df_temp)
@@ -497,9 +497,9 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
         for (machine_template, template_score, tid) in tqdm(deepcopy(population_template), desc=f"[TRAIN][it:{cpt_iteration}] Computing gradient for each template of the population",file=sys.stdout):
             if tid in self.mem_template_info:
                 averaged_template_gradient = self.mem_template_info[tid]['gradient']
-                tokenized_template = self.model.tokenizer.encode(machine_template.replace('[X]', '').replace(' [Y]', '').strip(), add_special_tokens=False)
+                tokenized_template = self.model.tokenizer.encode(machine_template.replace('[X]', '').replace(' [Y]', ''), add_special_tokens=False) # here I removed strip
             else:
-                tokenized_template = self.model.tokenizer.encode(machine_template.replace('[X]', '').replace(' [Y]', '').strip(), add_special_tokens=False)
+                tokenized_template = self.model.tokenizer.encode(machine_template.replace('[X]', '').replace(' [Y]', ''), add_special_tokens=False) # here I removed strip
                 filled_data = [(self.model.tokenizer.encode(subj), tokenized_template, self.model.tokenizer.encode(obj, add_special_tokens=False)) for subj, obj in target_pairs]
                 batches = [filled_data[i:i+batch_size] for i in range(0,len(filled_data),batch_size)]
                 accu_template_gradient = None
@@ -541,7 +541,7 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
                             temp = tokenized_template.copy()
                             temp[idx_tkn] = token_candidate
                             try:
-                                temp_text = '[X] '+self.model.tokenizer.decode(temp)+ ' [Y]'
+                                temp_text = '[X]'+self.model.tokenizer.decode(temp)+ ' [Y]' # I removed the space after [X]
                                 # check if we already know the score of the mutated template
                                 if temp_text in self.mem_template_info:
                                     temp_score = self.mem_template_info[temp_text]['score']
