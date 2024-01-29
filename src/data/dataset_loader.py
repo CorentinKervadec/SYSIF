@@ -4,6 +4,7 @@ import logging
 from datasets import load_dataset, Dataset
 import random
 import torch
+import torch.nn.functional as F
 import itertools
 
 
@@ -42,10 +43,12 @@ def slice_tokenized_datum(tokenized_datum, window_size, window_stride):
 
 
 
-def batchify(datalist, batch_size, drop_last, tokenizer=None, output_text=False):
+def batchify(datalist, batch_size, drop_last, tokenizer=None, output_text=False, pad=None):
     """
     /!\ if you don't specify a tokenizer, it assumes that the input
     is already tokenized and contains only samples of the same length (unless you set output_text=True)
+    If the input is already tokenized but you want to pad it to the same length, use tokenizer=None and pad=self.model.tokenizer.pad_token_id
+    (otherwise, set pad to none)
     """
     batches = [datalist[i:i+batch_size] for i in range(0,len(datalist),batch_size)]
 
@@ -60,10 +63,20 @@ def batchify(datalist, batch_size, drop_last, tokenizer=None, output_text=False)
     if tokenizer is not None:
         batches = [tokenizer(batch, padding=True, return_tensors="pt") for batch in batches]
     elif not output_text:
-        # to pytorch
-        batches = [torch.tensor(batch) for batch in batches]
-        attention_masks = [torch.ones_like(batch) for batch in batches]
-        batches = zip(batches, attention_masks)
+        if pad is not None:
+            # tokenize and (left) pad the inputs
+            pad_batches = []
+            for this_batch in batches:
+                max_length = max([len(t) for t in this_batch])
+                inputs = torch.stack([F.pad(torch.tensor(t), (max_length-len(t), 0), value=pad) for t in this_batch])
+                attention_masks = torch.where(inputs.eq(pad),0,1)
+                pad_batches.append((inputs, attention_masks))
+            batches = pad_batches
+        else:    
+            # to pytorch
+            batches = [torch.tensor(batch) for batch in batches]
+            attention_masks = [torch.ones_like(batch) for batch in batches]
+            batches = zip(batches, attention_masks)
 
     return batches, n_batches
 

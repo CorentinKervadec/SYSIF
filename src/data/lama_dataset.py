@@ -60,6 +60,19 @@ class LAMAset:
             filled_data = [(template.replace('[X]', subj).strip(), obj) for subj, obj in pair_list]
         return filled_data
 
+    def fill_tokenized_template(self, relation, tokenized_template, tokenizer, set='train'):
+        # filled a template that is already tokenized
+        filled_data = None   
+        if relation is not None:
+            this_set = self.dataset[self.dataset['set']==set]
+            this_set = this_set[this_set['predicate_id']==relation]
+            pair_list = this_set[['sub_label', 'obj_label']].values.tolist()
+            
+            filled_data = [(tokenizer.encode(subj), tokenized_template, tokenizer.encode(obj, add_special_tokens=False)) for subj, obj in pair_list]
+        
+        return filled_data
+    
+
     def fill_template_and_tokenize(self, relation, template, tokenizer, set='train'):
         """
         Fill and tokenize the templates
@@ -76,16 +89,10 @@ class LAMAset:
             # troncate the template by removing [Y]
             template = template[:-3]
 
+        # tokenize
         core_tokenized = tokenizer.encode(template.replace('[X]', '').strip(), add_special_tokens=False)
-
-        filled_data = None   
-        if relation is not None:
-            this_set = self.dataset[self.dataset['set']==set]
-            this_set = this_set[this_set['predicate_id']==relation]
-            pair_list = this_set[['sub_label', 'obj_label']].values.tolist()
-            
-            # TODO: adding the space before obj:-> this is very Pythia specific, change it
-            filled_data = [(tokenizer.encode(subj), core_tokenized, tokenizer.encode(' '+obj, add_special_tokens=False)) for subj, obj in pair_list]
+        # fill in
+        filled_data = self.fill_tokenized_template(self,  relation, core_tokenized, tokenizer, set='train')
         
         return core_tokenized, filled_data
     

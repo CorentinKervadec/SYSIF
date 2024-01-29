@@ -92,68 +92,97 @@ class DiscreteGradientPromptSearch():
     
     def save(self, population_template, cpt_iteration, savepath, same_pred=False):
         if savepath is not None:
+            dedup_template, _ = self.deduplicate_templates(population_template)
             with open(savepath, 'a') as f_out:
-                population_set = list(set(population_template))
-                population_set.sort(reverse=True, key=lambda x:x[1])
+                dedup_template.sort(reverse=True, key=lambda x:x[1])
                 if same_pred: # add another col
-                    savelines = '\n'.join([f'{cpt_iteration}\t{d[2]}\t[START-TEMPLATE]{d[0]}[END-TEMPLATE]\t{d[1]:.2f}\t{d[3]:.2f}' for d in population_set])+'\n'
+                    savelines = '\n'.join([f'{cpt_iteration}\t{d[2]}\t[START-TEMPLATE]{self.tokens2template(d[0])}[END-TEMPLATE]\t{str(d[0])}\t{d[1]:.2f}\t{d[3]:.2f}' for d in dedup_template])+'\n'
                 else:
-                    savelines = '\n'.join([f'{cpt_iteration}\t{d[2]}\t[START-TEMPLATE]{d[0]}[END-TEMPLATE]\t{d[1]:.2f}' for d in population_set])+'\n'
+                    savelines = '\n'.join([f'{cpt_iteration}\t{d[2]}\t[START-TEMPLATE]{self.tokens2template(d[0])}[END-TEMPLATE]\t{str(d[0])}\t{d[1]:.2f}' for d in dedup_template])+'\n'
                 f_out.write(savelines)
 
+    def tkn2str(self, tkns):
+        """
+        String version of the token sequence. This is not decoding!"""
+        return '-'.join([str(t) for t in tkns])
+    
+    def str2tkn(self, string):
+        """ inverse of tkn2str """
+        return [int(t) for t in string.split('-')]
+    
     def deduplicate_templates(self, template_candidates):
         population_template_undup = []
         population_template_undup_count = {}
-        for t in template_candidates:
+        string_tokens = [self.tkn2str(t[0]) for t in template_candidates] # trick because list cannot be used as dict key
+        for i, t in enumerate(string_tokens):
             if t not in population_template_undup:
-                population_template_undup.append(deepcopy(t))
-                population_template_undup_count[t[0]] = 1
+                population_template_undup.append(deepcopy(template_candidates[i]))
+                population_template_undup_count[t] = 1
             else: # dupplicate
-                population_template_undup_count[t[0]] += 1
+                population_template_undup_count[t] += 1
         template_candidates = population_template_undup
         return template_candidates, population_template_undup_count
     
     def reduplicate_templates(self, population_template, population_template_undup_count):
         population_template_redup = []
         for t in population_template:
-            population_template_redup += [deepcopy(t),]*population_template_undup_count[t[0]]
+            population_template_redup += [deepcopy(t),]*population_template_undup_count[self.tkn2str(t[0])]
         population_template = population_template_redup
         return population_template
 
-    def evaluate_candidates(self, template_candidates, lamaset, relation, batch_size, n_generated_tokens, return_pred=False):
+    def evaluate_candidates(self, template_candidates, data, relation, batch_size, n_generated_tokens, return_pred=False, return_prob=False):
         # remove dupplicates, but keep track of them
         template_candidates, population_template_undup_count = self.deduplicate_templates(template_candidates)
         # select those which have to be evaluated
         template_to_evaluate = [(t[0], t[2]) for t in template_candidates if t[1] is None]
-        # construct the prompts
-        df_candidates = []
-        for (this_template, tid) in template_to_evaluate:
-            filled_list = lamaset.fill_template(relation, this_template, set='dev', return_subj=True)
-            df_temp = pd.DataFrame()
-            df_temp['prompt'] = [tp[0] for tp in filled_list]
-            df_temp['label'] = [tp[1] for tp in filled_list]
-            df_temp['subject'] = [tp[2] for tp in filled_list]
-            df_temp['tid'] = [tid,] * len(df_temp)
-            # df_temp['relation'] = [relation,] * len(df_temp)
-            df_temp['template'] = [this_template,] * len(df_temp)
-            df_candidates.append(df_temp)
-        df_candidates = pd.concat(df_candidates)
-        # foward pass: feed prompts to the LM and gather predictions
-        prompt_list = df_candidates['prompt'].values.tolist()
-        pred_list = []
-        batches, n_batches = batchify(prompt_list, batch_size, drop_last=False, output_text=True)
-        for batch in tqdm(batches, desc="[EVALUATION]"):
-            text_generated = self.model.generate_tokens_from_text_batch(batch, n_tokens=n_generated_tokens)
-            pred_list += text_generated
-        df_candidates['pred'] = pred_list
-        # evaluate
-        df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)  
-
-        # todo: use a more balanced metric like below
-        # result = df_candidates.groupby(['template','tid','label']).mean('correct').groupby(['template','tid']).mean().reset_index().values.tolist()
-
-        population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['correct'].mean().reset_index().values.tolist()]\
-                                + [t for t in template_candidates if t[1] is not None]
+        if len(template_to_evaluate)>0:
+            # construct the prompts
+            df_candidates = []
+            for (this_template, tid) in template_to_evaluate:
+                if isinstance(data, LAMAset):
+                    filled_list = data.fill_tokenized_template(relation, this_template, self.model.tokenizer, set='dev')
+                else:
+                    filled_list = [(self.model.tokenizer.encode(subj), this_template, self.model.tokenizer.encode(obj, add_special_tokens=False)) for subj, obj in data]
+                df_temp = pd.DataFrame()
+                df_temp['prompt'] = [tp[0]+tp[1] for tp in filled_list]
+                df_temp['label'] = [self.model.tokenizer.decode(tp[2]) for tp in filled_list]
+                df_temp['subject'] = [tp[0] for tp in filled_list]
+                df_temp['tid'] = [tid,] * len(df_temp)
+                # df_temp['relation'] = [relation,] * len(df_temp)
+                df_temp['template'] = [self.tkn2str(this_template),] * len(df_temp)
+                df_candidates.append(df_temp)
+            df_candidates = pd.concat(df_candidates)
+            # foward pass: feed prompts to the LM and gather predictions
+            prompt_list = df_candidates['prompt'].values.tolist()
+            pred_list = []
+            prob_list = []
+            batches, n_batches = batchify(
+                prompt_list, batch_size, drop_last=False, output_text=False,
+                tokenizer=None, pad=self.model.tokenizer.pad_token_id)
+            for batch in tqdm(batches, desc="[EVALUATION]"):
+                if return_prob: #only compute the loss
+                    output = self.model.forward_pass_nograd(batch, tokenize=False)
+                    pred_logit = output.logits[:,-1]
+                    pred_prob = torch.softmax(pred_logit, dim=-1).tolist()
+                    tokens_generated = torch.argmax(pred_logit, dim=-1)                
+                    prob_list += pred_prob
+                else:
+                    tokens_generated = self.model.generate_tokens_batch(input_ids=batch[0], attention_mask=batch[1], n_tokens=n_generated_tokens)
+                pred_list += tokens_generated.cpu().tolist()
+            df_candidates['pred'] = [self.model.tokenizer.decode(p) for p in pred_list]
+            # evaluate
+            if return_prob:
+                df_candidates['probs'] = prob_list
+                df_candidates['gt_prob'] = df_candidates.apply(lambda row: row['probs'][self.model.tokenizer.encode(row['label'], add_special_tokens=False)[0]], axis=1)  # get the prob associated to the groundtruth
+                population_template = [(self.str2tkn(d[0]), d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['gt_prob'].mean().reset_index().values.tolist()]\
+                            + [t for t in template_candidates if t[1] is not None]
+            else:
+                df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)
+                population_template = [(self.str2tkn(d[0]), d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['correct'].mean().reset_index().values.tolist()]\
+                            + [t for t in template_candidates if t[1] is not None]
+        else:
+            population_template = template_candidates
+        
         # redupplicate
         population_template = self.reduplicate_templates(population_template, population_template_undup_count)
         
@@ -172,68 +201,80 @@ class DiscreteGradientPromptSearch():
     def print_population(self, population_template):
         population_template.sort(reverse=True, key=lambda x:x[1])
         if self.verbose:
-            msg = '\n'.join([f'[{d[2]}] T:__{d[0]}__. S:{d[1]:.2f}' for d in population_template[:self.topk_display]])
-            print(f'[INITIAL POPULATION]:\n'+msg)
+            msg = '\n'.join([f'[{d[2]}] T:__{self.tokens2template(d[0])}__. S:{d[1]:.2f}' for d in population_template[:self.topk_display]])
+            print(f'[POPULATION]:\n'+msg)
 
+    def extract_template_gradient(self, batches, tokenized_template, embeddings):
+        accu_template_gradient = None
+        len_data = 0
+        for batch in batches:
+            # prepare input
+            inputs = [torch.tensor(d[0]+d[1]) for d in batch]
+            labels = [torch.tensor(d[2]) for d in batch]
+            labels = [l[0] for l in labels] # only keep the first token. TODO: should we change that?
+            # tokenize and (right) pad the inputs
+            max_length = max([len(t) for t in inputs])
+            inputs = torch.stack([F.pad(t, (0, max_length-len(t)), value=self.model.tokenizer.pad_token_id) for t in inputs])
+            attention_mask = torch.where(inputs.eq(self.model.tokenizer.pad_token_id),0,1)
+            # todo: this is hacky
+            template_mask = torch.tensor([[0,]*len(d[0])+[1,]*len(d[1])+[0,]*(max_length-(len(d[0])+len(d[1]))) for d in batch]).bool()# 1 if the token is part of the template 0 otherwise
+            # feed the model with the data
+            output = self.model.forward_pass((inputs.to(self.device), attention_mask.to(self.device)), tokenize=False)
+            pred_id = attention_mask.sum(-1)-1 # be sure that padding is 'right'
+            pred_logit = output.logits[range(len(batch)), pred_id]
+            # compute loss
+            loss = self.nll(pred_logit, torch.tensor(labels).to(self.device)).mean()
+            # compute gradient of loss vs input embedding
+            loss.backward()
+            embeddings_gradient = self.get_embedding_gradient()
+            # only keep the gradient of the template tokens
+            template_gradient = torch.masked_select(embeddings_gradient, template_mask.unsqueeze(-1).to(self.device)).view(len(batch), len(tokenized_template), embeddings.size(-1))
+            accu_template_gradient = (accu_template_gradient + template_gradient.sum(0)) if accu_template_gradient is not None else template_gradient.sum(0)
+            len_data += len(batch)
+        averaged_template_gradient = accu_template_gradient / len_data
+        return averaged_template_gradient
 
-    def new_generation(self, population_template, p_flip, lamaset, relation, batch_size, cpt_iteration, template_count):
+    def mutate(self, population_template, machine_template, averaged_template_gradient, embeddings, p_flip, tid, template_count):
+        # Mutation: hotflip attack (from Autoprompt)
+        with torch.no_grad():
+            len_tokenized_template = len(machine_template)
+            for idx_tkn in range(len_tokenized_template):
+                p = random.random()
+                if p < p_flip:
+                    sampled_tokens = self.hotflip_attack(averaged_template_gradient[idx_tkn], embeddings, num_candidates=self.num_candidates)
+                    # Add mutated templates to the population
+                    for token_candidate in sampled_tokens:
+                        temp = machine_template.copy()
+                        temp[idx_tkn] = token_candidate
+                        try:
+                            # check if we already know the score of the mutated template
+                            if self.tkn2str(temp) in self.mem_template_info:
+                                temp_score = self.mem_template_info[self.tkn2str(temp)]['score']
+                            else:
+                                temp_score = None
+                            template_count += 1 # increase template count
+                            population_template.append((deepcopy(temp), temp_score, f'{tid}-{template_count}')) # (text_template, score)
+                        except TypeError: # can happens if something goes wrong with the tokenizer
+                            continue # skip it  
+        return population_template
+
+    def new_generation(self, population_template, p_flip, data, relation, batch_size, cpt_iteration, template_count):
         embeddings = self.model.get_embeddings().weight
         for (machine_template, template_score, tid) in tqdm(deepcopy(population_template), desc=f"[TRAIN][it:{cpt_iteration}] Computing gradient for each template of the population",file=sys.stdout):
-            if tid in self.mem_template_info:
-                averaged_template_gradient = self.mem_template_info[tid]['gradient']
-                tokenized_template, _ = lamaset.fill_template_and_tokenize(None, machine_template, self.model.tokenizer) # first arg to None to just get the tokenized template
+            # extract embeddings
+            if self.tkn2str(machine_template) in self.mem_template_info:
+                averaged_template_gradient = self.mem_template_info[self.tkn2str(machine_template)]['gradient']
             else:
-                tokenized_template, filled_data = lamaset.fill_template_and_tokenize(relation, machine_template, self.model.tokenizer, set='train')
+                if isinstance(data, LAMAset):
+                    filled_data = data.fill_tokenized_template(relation, machine_template, self.model.tokenizer, set='train')
+                else:
+                    filled_data = [(self.model.tokenizer.encode(subj), machine_template, self.model.tokenizer.encode(obj, add_special_tokens=False)) for subj, obj in data]
                 batches = [filled_data[i:i+batch_size] for i in range(0,len(filled_data),batch_size)]
-                accu_template_gradient = None
-                for batch in batches:
-                    # prepare input
-                    inputs = [torch.tensor(d[0]+d[1]) for d in batch]
-                    labels = [torch.tensor(d[2]) for d in batch]
-                    labels = [l[0] for l in labels] # only keep the first token. TODO: should we change that?
-                    # tokenize and (right) pad the inputs
-                    max_length = max([len(t) for t in inputs])
-                    inputs = torch.stack([F.pad(t, (0, max_length-len(t)), value=self.model.tokenizer.pad_token_id) for t in inputs])
-                    attention_mask = torch.where(inputs.eq(self.model.tokenizer.pad_token_id),0,1)
-                    # todo: this is hacky
-                    template_mask = torch.tensor([[0,]*len(d[0])+[1,]*len(d[1])+[0,]*(max_length-(len(d[0])+len(d[1]))) for d in batch]).bool()# 1 if the token is part of the template 0 otherwise
-                    # feed the model with the data
-                    output = self.model.forward_pass((inputs.to(self.device), attention_mask.to(self.device)), tokenize=False)
-                    pred_id = attention_mask.sum(-1)-1 # be sure that padding is 'right'
-                    pred_logit = output.logits[range(len(batch)), pred_id]
-                    # compute loss
-                    loss = self.nll(pred_logit, torch.tensor(labels).to(self.device)).mean()
-                    # compute gradient of loss vs input embedding
-                    loss.backward()
-                    embeddings_gradient = self.get_embedding_gradient()
-                    # only keep the gradient of the template tokens
-                    template_gradient = torch.masked_select(embeddings_gradient, template_mask.unsqueeze(-1).to(self.device)).view(len(batch), len(tokenized_template), embeddings.size(-1))
-                    accu_template_gradient = (accu_template_gradient + template_gradient.sum(0)) if accu_template_gradient is not None else template_gradient.sum(0)
-                averaged_template_gradient = accu_template_gradient / len(filled_data)
+                averaged_template_gradient = self.extract_template_gradient(batches, machine_template, embeddings)
                 # save the embedding gradient for later
-                self.mem_template_info[tid] = {'gradient': averaged_template_gradient.detach().clone(), 'score': template_score}
-            # Mutation: hotflip attack (from Autoprompt)
-            with torch.no_grad():
-                len_tokenized_template = len(tokenized_template)
-                for idx_tkn in range(len_tokenized_template):
-                    p = random.random()
-                    if p < p_flip:
-                        sampled_tokens = self.hotflip_attack(averaged_template_gradient[idx_tkn], embeddings, num_candidates=self.num_candidates)
-                        # Add mutated templates to the population
-                        for token_candidate in sampled_tokens:
-                            temp = tokenized_template.copy()
-                            temp[idx_tkn] = token_candidate
-                            try:
-                                temp_text = '[X] '+self.model.tokenizer.decode(temp)+ ' [Y]'
-                                # check if we already know the score of the mutated template
-                                if temp_text in self.mem_template_info:
-                                    temp_score = self.mem_template_info[temp_text]['score']
-                                else:
-                                    temp_score = None
-                                template_count += 1 # increase template count
-                                population_template.append((temp_text, temp_score, f'{tid}-{template_count}')) # (text_template, score)
-                            except TypeError: # can happens if something goes wrong with the tokenizer
-                                continue # skip it
+                self.mem_template_info[self.tkn2str(machine_template)] = {'gradient': averaged_template_gradient.detach().clone(), 'score': template_score}
+            # create mutation using the hotflip attack
+            population_template = self.mutate(population_template, machine_template, averaged_template_gradient, embeddings, p_flip, tid, template_count)
         return population_template, template_count
     
     def evolution_step(self, population_template, n_rounds, lamaset, relation, batch_size, cpt_iteration, template_count):
@@ -246,6 +287,19 @@ class DiscreteGradientPromptSearch():
         population_template = self.select_candidates(population_template)
         return population_template, template_count
 
+    def template2tokens(self, template):
+        # remove [Y] and strip. The template should not end by a space
+        core_template = template.replace('[Y]', '').strip()
+        # remove [X]. The template generally starts by a space
+        core_template = core_template.replace('[X]', '')
+        tokens = self.model.tokenizer.encode(core_template, add_special_tokens=False)
+        return tokens
+    
+    def tokens2template(self, tokens):
+        core_template = self.model.tokenizer.decode(tokens)
+        template = f'[X]{core_template}[Y]'
+        return template
+
     def train(self, initial_population, lamaset, relation, n_iterations_max, batch_size, savepath, only_best_human=False):
         """
         dataset is a list of tuple [(X,Y), ...]
@@ -256,7 +310,7 @@ class DiscreteGradientPromptSearch():
         # (template, score, template_id)
         # the template_id is constructing by concatenanting the parent id + a new number
         # here the parent id is R (root).
-        population_template = [(t, None, f'R-{t_id}') for t_id, t in enumerate(initial_population)]
+        population_template = [(self.template2tokens(t), None, f'R-{t_id}') for t_id, t in enumerate(initial_population)]
 
         # first, eval the initial population
         population_template = self.evaluate_candidates(population_template, lamaset, relation, batch_size, self.n_tkn_generated)
@@ -422,144 +476,22 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
         self.topk_template=5
         self.verbose = verbose
 
-    def evaluate_candidates(self, template_candidates, target_pairs, batch_size, n_generated_tokens, return_pred=False, return_prob=False):
-        # remove dupplicates, but keep track of them
-        template_candidates, population_template_undup_count = self.deduplicate_templates(template_candidates)
-        # select those which have to be evaluated
-        template_to_evaluate = [(t[0], t[2]) for t in template_candidates if t[1] is None]
-        if len(template_to_evaluate)>0:
-            # construct the prompts
-            df_candidates = []
-            for (this_template, tid) in template_to_evaluate:
-                df_temp = pd.DataFrame()
-                df_temp['prompt'] = [this_template.replace('[X]', pair[0]).replace(' [Y]', '') for pair in target_pairs] # here, I removed strip()
-                df_temp['label'] = [pair[1] for pair in target_pairs]
-                df_temp['subject'] = [pair[0] for pair in target_pairs]
-                df_temp['tid'] = [tid,] * len(df_temp)
-                # df_temp['relation'] = [relation,] * len(df_temp)
-                df_temp['template'] = [this_template,] * len(df_temp)
-                df_candidates.append(df_temp)
-            df_candidates = pd.concat(df_candidates)
-            # foward pass: feed prompts to the LM and gather predictions
-            prompt_list = df_candidates['prompt'].values.tolist()
-            pred_list = []
-            prob_list = []
-            batches, n_batches = batchify(prompt_list, batch_size, drop_last=False, output_text=True)
-            for batch in tqdm(batches, desc="[EVALUATION]"):
-                if return_prob: #only compute the loss
-                    output, attention_mask = self.model.forward_pass_nograd(batch, tokenize=True)
-                    pred_logit = output.logits[:,-1]
-                    pred_prob = torch.softmax(pred_logit, dim=-1).tolist()
-                    text_generated = [self.model.tokenizer.decode(t) for t in torch.argmax(pred_logit, dim=-1)]
-                    
-                    prob_list += pred_prob
-                else:
-                    text_generated = self.model.generate_tokens_from_text_batch(batch, n_tokens=n_generated_tokens)
-                pred_list += text_generated
-            df_candidates['pred'] = pred_list
-            # evaluate
-            if return_prob:
-                df_candidates['probs'] = prob_list
-                df_candidates['gt_prob'] = df_candidates.apply(lambda row: row['probs'][self.model.tokenizer.encode(row['label'], add_special_tokens=False)[0]], axis=1)  # get the prob associated to the groundtruth
-                population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['gt_prob'].mean().reset_index().values.tolist()]\
-                            + [t for t in template_candidates if t[1] is not None]
-                # print(df_candidates[['label', 'pred', 'gt_prob']])
-            else:
-                df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)  
-                population_template = [(d[0], d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['correct'].mean().reset_index().values.tolist()]\
-                            + [t for t in template_candidates if t[1] is not None]
-                # print(df_candidates[['prompt', 'label', 'pred', 'correct']])
-            # todo: use a more balanced metric like below
-            # result = df_candidates.groupby(['template','tid','label']).mean('correct').groupby(['template','tid']).mean().reset_index().values.tolist()
-            # redupplicate    
-        else:
-            population_template = template_candidates
-
-        population_template = self.reduplicate_templates(population_template, population_template_undup_count)
-
-        if return_pred:
-            return population_template, df_candidates
-        else:
-            return population_template
-
     def evolution_step(self, population_template, n_rounds, target_pairs, batch_size, cpt_iteration, template_count):
         for round in range(n_rounds):
-            population_template, template_count = self.new_generation(population_template, self.p_flip/(2**round), target_pairs, batch_size, cpt_iteration, template_count)
-            
+            population_template, template_count = self.new_generation(population_template, self.p_flip/(2**round), target_pairs, None, batch_size, cpt_iteration, template_count)
         # evaluate the new templates in the population
-        population_template = self.evaluate_candidates(population_template, target_pairs, batch_size, 1, return_prob=True)
+        population_template = self.evaluate_candidates(population_template, target_pairs, None, batch_size, 1, return_prob=True)
         # select the best template of the population (sampling)
         population_template = self.select_candidates(population_template)
         return population_template, template_count
 
-    def new_generation(self, population_template, p_flip, target_pairs, batch_size, cpt_iteration, template_count):
-        embeddings = self.model.get_embeddings().weight
-        for (machine_template, template_score, tid) in tqdm(deepcopy(population_template), desc=f"[TRAIN][it:{cpt_iteration}] Computing gradient for each template of the population",file=sys.stdout):
-            if tid in self.mem_template_info:
-                averaged_template_gradient = self.mem_template_info[tid]['gradient']
-                tokenized_template = self.model.tokenizer.encode(machine_template.replace('[X]', '').replace(' [Y]', ''), add_special_tokens=False) # here I removed strip
-            else:
-                tokenized_template = self.model.tokenizer.encode(machine_template.replace('[X]', '').replace(' [Y]', ''), add_special_tokens=False) # here I removed strip
-                filled_data = [(self.model.tokenizer.encode(subj), tokenized_template, self.model.tokenizer.encode(obj, add_special_tokens=False)) for subj, obj in target_pairs]
-                batches = [filled_data[i:i+batch_size] for i in range(0,len(filled_data),batch_size)]
-                accu_template_gradient = None
-                for batch in batches:
-                    # prepare input
-                    inputs = [torch.tensor(d[0]+d[1]) for d in batch]
-                    labels = [torch.tensor(d[2]) for d in batch]
-                    labels = [l[0] for l in labels] # only keep the first token. TODO: should we change that?
-                    # tokenize and (right) pad the inputs
-                    max_length = max([len(t) for t in inputs])
-                    inputs = torch.stack([F.pad(t, (0, max_length-len(t)), value=self.model.tokenizer.pad_token_id) for t in inputs])
-                    attention_mask = torch.where(inputs.eq(self.model.tokenizer.pad_token_id),0,1)
-                    # todo: this is hacky
-                    template_mask = torch.tensor([[0,]*len(d[0])+[1,]*len(d[1])+[0,]*(max_length-(len(d[0])+len(d[1]))) for d in batch]).bool()# 1 if the token is part of the template 0 otherwise
-                    # feed the model with the data
-                    output = self.model.forward_pass((inputs.to(self.device), attention_mask.to(self.device)), tokenize=False)
-                    pred_id = attention_mask.sum(-1)-1 # be sure that padding is 'right'
-                    pred_logit = output.logits[range(len(batch)), pred_id]
-                    # compute loss
-                    loss = self.nll(pred_logit, torch.tensor(labels).to(self.device)).mean()
-                    # compute gradient of loss vs input embedding
-                    loss.backward()
-                    embeddings_gradient = self.get_embedding_gradient()
-                    # only keep the gradient of the template tokens
-                    template_gradient = torch.masked_select(embeddings_gradient, template_mask.unsqueeze(-1).to(self.device)).view(len(batch), len(tokenized_template), embeddings.size(-1))
-                    accu_template_gradient = (accu_template_gradient + template_gradient.sum(0)) if accu_template_gradient is not None else template_gradient.sum(0)
-                averaged_template_gradient = accu_template_gradient / len(filled_data)
-                # save the embedding gradient for later
-                self.mem_template_info[tid] = {'gradient': averaged_template_gradient.detach().clone(), 'score': template_score}
-            # Mutation: hotflip attack (from Autoprompt)
-            with torch.no_grad():
-                len_tokenized_template = len(tokenized_template)
-                for idx_tkn in range(len_tokenized_template):
-                    p = random.random()
-                    if p < p_flip:
-                        sampled_tokens = self.hotflip_attack(averaged_template_gradient[idx_tkn], embeddings, num_candidates=self.num_candidates)
-                        # Add mutated templates to the population
-                        for token_candidate in sampled_tokens:
-                            temp = tokenized_template.copy()
-                            temp[idx_tkn] = token_candidate
-                            try:
-                                temp_text = '[X]'+self.model.tokenizer.decode(temp)+ ' [Y]' # I removed the space after [X]
-                                # check if we already know the score of the mutated template
-                                if temp_text in self.mem_template_info:
-                                    temp_score = self.mem_template_info[temp_text]['score']
-                                else:
-                                    temp_score = None
-                                template_count += 1 # increase template count
-                                population_template.append((temp_text, temp_score, f'{tid}-{template_count}')) # (text_template, score)
-                            except TypeError: # can happens if something goes wrong with the tokenizer
-                                continue # skip it
-        return population_template, template_count
-
     def train(self, template_len, target_pairs, n_iterations_max, batch_size, savepath):
        
-        initial_template = '[X]'+self.model.tokenizer.decode([random.randint(0, self.model.get_vocab_size()-1) for _ in range(template_len)])+' [Y]'
+        initial_template = [random.randint(0, self.model.get_vocab_size()-1) for _ in range(template_len)]
         population_template = [(initial_template, None, f'R-0'),]
 
         # first, eval the initial population
-        population_template = self.evaluate_candidates(population_template, target_pairs, batch_size, self.n_tkn_generated, return_prob=True)
+        population_template = self.evaluate_candidates(population_template, target_pairs, None, batch_size, self.n_tkn_generated, return_pred=False, return_prob=True)
         self.print_population(population_template)
 
         not_finished = True
@@ -597,13 +529,13 @@ class RandomPairPromptSearch(DiscreteGradientPromptSearch):
             # evaluate accuracy
             if cpt_iteration%2==0 or (not not_finished):
                 evaluated_population = [(t[0], None, t[2]) for t in population_template] # put none into score, to be sure that the score will be computed
-                evaluated_population = self.evaluate_candidates(evaluated_population, target_pairs, batch_size, self.n_tkn_generated, return_prob=False)
+                evaluated_population = self.evaluate_candidates(evaluated_population, target_pairs, None, batch_size, self.n_tkn_generated,return_pred=False, return_prob=False)
                 self.print_population(evaluated_population)
                 if evaluated_population[0][1] == 1.0:
                     not_finished = False
                     all_population_template = evaluated_population
 
-        all_population_template = set(all_population_template)
+        all_population_template, _ = self.deduplicate_templates(all_population_template)
 
         return all_population_template, cpt_iteration
 

@@ -23,21 +23,22 @@ class CausalLanguageModel:
         # print(self.model)
         self.layer_act = self.get_act_fn()
 
-    def generate_tokens_batch(self, tkns_input, n_tokens):
+    def generate_tokens_batch(self, input_ids, attention_mask, n_tokens):
+        # require left padding
         tokens_generated = self.model.generate(
-            input_ids=tkns_input.input_ids,
-            attention_mask=tkns_input.attention_mask,
+            input_ids=input_ids.to(self.device),
+            attention_mask=attention_mask.to(self.device),
             max_new_tokens=n_tokens, do_sample=False,
             eos_token_id=self.tokenizer.eos_token_id, pad_token_id=self.tokenizer.eos_token_id)
         tokens_generated = tokens_generated[:, -n_tokens:]
         return tokens_generated
 
     def generate_tokens_from_text_batch(self, text_input, n_tokens):
-        input_ids = self.tokenizer(text_input, padding=True, return_tensors='pt').to(self.device)
-        tokens_generated = self.generate_tokens_batch(input_ids, n_tokens)
+        tokenized = self.tokenizer(text_input, padding=True, return_tensors='pt').to(self.device)
+        tokens_generated = self.generate_tokens_batch(tokenized.input_ids, tokenized.attention_mask, n_tokens)
         text_generated = [self.tokenizer.decode(t) for t in tokens_generated]
         return text_generated
-    
+
     # def generate_text(self, prompt, max_length=50, num_return_sequences=1):
     #     input_ids = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
     #     output = self.model.generate(input_ids, max_length=max_length, num_return_sequences=num_return_sequences, no_repeat_ngram_size=2)

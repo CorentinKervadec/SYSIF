@@ -81,12 +81,11 @@ if __name__ == "__main__":
                 savelines = f'TARGETS:\t{target_strings}\n'
                 f_out.write(savelines)
         all_population_template, cpt_iteration = promptSearch.train(template_len=args.template_len, target_pairs=target_pairs, n_iterations_max=args.n_iterations_max, batch_size=args.batch_size, savepath=None)
-        all_population_template = list(all_population_template)
         all_population_template.sort(reverse=True, key=lambda x:x[1])
         best_prompt = all_population_template[0]
         print(best_prompt)
         #write into file
         if savepath is not None:
             with open(savepath, 'a') as f_out:
-                savelines = f'{cpt_iteration}\t{best_prompt[2]}\t[START-TEMPLATE]{best_prompt[0]}[END-TEMPLATE]\t{best_prompt[1]:.2f}\n'
+                savelines = f'{cpt_iteration}\t{best_prompt[2]}\t[START-TEMPLATE]{promptSearch.tokens2template(best_prompt[0])}[END-TEMPLATE]\t{str(best_prompt[0])}\t{best_prompt[1]:.2f}\n'
                 f_out.write(savelines)
