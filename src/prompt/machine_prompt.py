@@ -296,8 +296,11 @@ class DiscreteGradientPromptSearch():
         return tokens
     
     def tokens2template(self, tokens):
-        core_template = self.model.tokenizer.decode(tokens)
-        template = f'[X]{core_template}[Y]'
+        try:
+            core_template = self.model.tokenizer.decode(tokens)
+            template = f'[X]{core_template}[Y]'
+        except TypeError:
+            template = f'--decoding-error--'
         return template
 
     def train(self, initial_population, lamaset, relation, n_iterations_max, batch_size, savepath, only_best_human=False):
