@@ -355,7 +355,7 @@ class DiscreteGradientPromptSearch():
                     if self.mem_template_info[t]['score'] is None or self.mem_template_info[t]['score'] <= med_score:
                         del self.mem_template_info[t]
 
-        all_population_template = set(all_population_template)
+        all_population_template, _ = self.deduplicate_templates(all_population_template)
 
         return all_population_template
 
