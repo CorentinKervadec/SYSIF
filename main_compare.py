@@ -1,6 +1,6 @@
 import argparse
 import torch
-from torch.nn.functional import kl_div
+from torch.nn.functional import kl_div, cosine_similarity
 import pandas as pd
 from tqdm import tqdm
 import logging
@@ -10,7 +10,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 
-from src.prompt.machine_prompt import DiscreteGradientPromptSearch, OneTokenGradientPromptSearch
+from src.prompt.machine_prompt import DiscreteGradientPromptSearch, OneTokenGradientPromptSearch, RandomPairPromptSearch
 from src.prompt.utils import parse_paraphrases
 from src.data.lama_dataset import LAMAset
 from src.utils.init_utils import init_device, init_random_seed
@@ -43,22 +43,34 @@ def parse_args():
     return args
 
 def forward_extract_from_pair(model, templates, input_pair, kn_act_buffer):
-    filled_templates = [template.replace('[X]',input_pair[0]).replace('[Y]', '').strip() for template in templates]
+    input_pair_tkn = model.tokenizer.encode(input_pair[0])
+    filled_templates = [input_pair_tkn+template for template in templates]
+    filled_templates = [(torch.tensor(t).unsqueeze(0), torch.ones(len(t)).unsqueeze(0)) for t in filled_templates]
     all_intermediate_representation = []
     all_intermediate_preds = []
     all_intermediate_softmax = []
     all_activations = []
+    all_mlp = []
+    all_mlp_pred = []
+    all_attn = []
+    all_attn_pred = []
     for i in range(len(filled_templates)):
-        text_input = filled_templates[i]
-        intermediate_preds, intermediate_softmax, intermediate_representation, knowledge_neurones = model.get_intermediate_output(text_input)
+        tkn_input = filled_templates[i]
+        intermediate_preds, intermediate_softmax, intermediate_representation, knowledge_neurones, mlp, mlp_pred, attn, attn_pred = model.get_intermediate_output(tkn_input, tokenize=False)
         all_intermediate_representation.append(intermediate_representation)
         all_intermediate_preds.append(intermediate_preds)
         all_intermediate_softmax.append(intermediate_softmax)
         all_activations.append(knowledge_neurones)
+        all_mlp.append(mlp)
+        all_mlp_pred.append(mlp_pred)
+        all_attn.append(attn)
+        all_attn_pred.append(attn_pred)
     all_intermediate_representation = torch.stack(all_intermediate_representation).float() # shape (prompts, layers, h)
     all_intermediate_softmax = torch.stack(all_intermediate_softmax).float() # shape (prompts, layers, d_voc)
     all_activations = torch.stack(all_activations)
-    return all_intermediate_preds, all_intermediate_softmax, all_intermediate_representation, all_activations
+    all_mlp = torch.stack(all_mlp)
+    all_attn = torch.stack(all_attn)
+    return all_intermediate_preds, all_intermediate_softmax, all_intermediate_representation, all_activations, all_mlp, all_mlp_pred, all_attn, all_attn_pred
 
 # def test_numerical_stability(v):
 
@@ -103,14 +115,14 @@ if __name__ == "__main__":
     # start iterating across relations
     for relation in relations: # in the future, run all relation in parallel in different scrips
         # initial_template = paraphrases[relation]
-        initial_template = ['[X]'+model.tokenizer.decode([random.randint(0, model.get_vocab_size()-1) for _ in range(8)])+' [Y]',]
-        """
-        dataset is a list of tuple [(X,Y), ...]
-        where X is used to fill in the template and Y is the expected next token.
-        """
-        savepath = os.path.join(args.output,f'one-tok-search-{args.mode}_{model_name_parse}_{relation}_{random_seed}.tsv') 
-        # template_set, df_human, df_candidates = oneTokSearch.search(initial_template, None, lamaset, relation, args.batch_size, only_best_human=True)
-        template_set = promptSearch.train(initial_template, lamaset, relation, 50, args.batch_size, None, only_best_human=True)
+        # initial_template = ['[X]'+model.tokenizer.decode([random.randint(0, model.get_vocab_size()-1) for _ in range(8)])+' [Y]',]
+        # """
+        # dataset is a list of tuple [(X,Y), ...]
+        # where X is used to fill in the template and Y is the expected next token.
+        # """
+        # savepath = os.path.join(args.output,f'one-tok-search-{args.mode}_{model_name_parse}_{relation}_{random_seed}.tsv') 
+        # # template_set, df_human, df_candidates = oneTokSearch.search(initial_template, None, lamaset, relation, args.batch_size, only_best_human=True)
+        # template_set = promptSearch.train(initial_template, lamaset, relation, 50, args.batch_size, None, only_best_human=True)
         """
         Origin=human
         """
@@ -122,40 +134,49 @@ if __name__ == "__main__":
         # in the following, mutation are really successusives 
         # template_set = {('[X] unofficial debatesstroke ferocious deadlines436380 copyright [Y]', 0.064516129032258, 'R-0-25-518-639-1450'), ('[X] unofficial debatesstroke ferocious deadlines Breast380 copyright [Y]', 0.032258064516129, 'R-0-25-518-639'), ('[X] populations widening vulgarphalt bible Garner detailingHomeUrl Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770'), ('[X] passers exhibition debates identity detailing deadlinesUrl ideas copyright [Y]', 0.1612903225806451, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510'), ('[X] populations widening vot marryingokes Garner Greater1900Url Photography Wonderful [Y]', 0.2419354838709677, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620'), ('[X] unofficial debates Data ferocious deadlines Breast380 copyright [Y]', 0.032258064516129, 'R-0-25-518'), ('[X] populations stockpsteroubtedly } Garner Greater1900Url Photography Wonderful [Y]', 0.3064516129032258, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014'), ('[X] populations stockpuerAYさwealth PepislUrl Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982-35484-36413-36588-37852-38558-42910-43010-43833-44492-45835-46480'), ('[X] populations widening magn marryingokes Garner agesHomeUrl Photography Wonderful [Y]', 0.2903225806451613, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483'), ('[X] refillers exhibition debates identity detailing reservationsUrl machine Wonderful [Y]', 0.2580645161290322, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051'), ('[X] populations stockpuerAYさ inclusion Greater019Url Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982-35484-36413-36588-37852-38558-42910-43010'), ('[X] populations stockpoken comprised } Garner Greater1900Url Photography Wonderful [Y]', 0.3064516129032258, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621'), ('[X] populations widening vot marryingokes Garner ages1900Url Photography Wonderful [Y]', 0.2903225806451613, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420'), ('[X] populations Brooksersphalt debates maximum detailingHomeUrl Photography Wonderful [Y]', 0.2419354838709677, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039'), ('[X] 246 frontrunner debates dipping Alma deadlines436380 copyright [Y]', 0.0806451612903225, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035'), ('[X] populations stockpuerAY } Garner Greater019Url Photography Wonderful [Y]', 0.2903225806451613, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982-35484-36413-36588'), ('[X] populations widening magnmetokes Garner agesHomeUrl Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428'), ('[X] turns VIS debates dipping detailing deadlines436380 copyright [Y]', 0.0806451612903225, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172'), ('[X] populationsillersphalt debates maximum detailing complaintsUrl Photography Wonderful [Y]', 0.2580645161290322, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176'), ('[X] unofficial debates dipping Alma deadlines436380 copyright [Y]', 0.0483870967741935, 'R-0-25-518-639-1450-2007-2222-3016-3728'), ('[X] turns VIS debates identity detailing deadlines436380 copyright [Y]', 0.0806451612903225, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781'), ('[X] turns VIS debates identity detailing deadlinesUrl ideas copyright [Y]', 0.1290322580645161, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216'), ('[X] populations lifestylesacedAYさwealth 225islUrl Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982-35484-36413-36588-37852-38558-42910-43010-43833-44492-45835-46480-46615-48058-48498-48814'), ('[X] populations stockpuer herein } Garner Greater1900Url Photography Wonderful [Y]', 0.2903225806451613, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982-35484'), ('[X] 246 frontrunner debates dipping detailing deadlines436380 copyright [Y]', 0.0967741935483871, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621'), ('[X] unofficial bureaucratic Data ferocious deadlines Breast380 Darwin [Y]', 0.0, 'R-0'), ('[X] populations stockpuer comprised } Garner Greater1900Url Photography Wonderful [Y]', 0.3064516129032258, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982'), ('[X] passers assembled debates identity detailing deadlinesUrl ideas copyright [Y]', 0.1129032258064516, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425'), ('[X] populations wideningsteroubtedlyokes Garner Greater1900Url Photography Wonderful [Y]', 0.3064516129032258, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354'), ('[X] refillers exhibition debates nerves detailing complaintsUrl machine Wonderful [Y]', 0.2580645161290322, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061'), ('[X] refillers exhibition debates identity detailing deadlinesUrl ideas Wonderful [Y]', 0.1935483870967742, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604'), ('[X] refillers exhibition debates identity detailing desiresUrl machine Wonderful [Y]', 0.2419354838709677, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177'), ('[X] unofficial debates dis Alma deadlines436380 copyright [Y]', 0.032258064516129, 'R-0-25-518-639-1450-2007-2222-3016'), ('[X] populations stockpuerAY } inclusion Greater019Url Photography Wonderful [Y]', 0.3064516129032258, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982-35484-36413-36588-37852-38558'), ('[X] populations widening magnphaltokes Garner agesHomeUrl Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449'), ('[X] populationsillers exhibition debates maximum detailing complaintsUrl Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077'), ('[X] populations Brooks Hughesphalt debated maximum detailingHomeUrl Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552'), ('[X] populations widening Hughesphalt bible maximum detailingHomeUrl Photography Wonderful [Y]', 0.2580645161290322, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357'), ('[X] populations collapsing Hughesphalt debated maximum detailingHomeUrl Photography Wonderful [Y]', 0.2580645161290322, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227'), ('[X] populations stockpuerAYさwealth Pep019Url Photography Wonderful [Y]', 0.2903225806451613, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982-35484-36413-36588-37852-38558-42910-43010-43833-44492'), ('[X] populations stockpuerAYさwealth 225islUrl Photography Wonderful [Y]', 0.2903225806451613, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242-23449-25428-26390-26483-28063-28420-28620-29737-30354-31143-32014-33224-33621-34649-34982-35484-36413-36588-37852-38558-42910-43010-43833-44492-45835-46480-46615-48058'), ('[X] refillers exhibition debates maximum detailing complaintsUrl arrange Wonderful [Y]', 0.2580645161290322, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868'), ('[X] populations widening magnphalt bible Garner agesHomeUrl Photography Wonderful [Y]', 0.2741935483870967, 'R-0-25-518-639-1450-2007-2222-3016-3728-4670-5035-5621-5961-6172-7124-7781-8515-9216-9297-9425-10106-10510-11381-11604-12191-13177-13228-14051-14552-15061-15279-15868-15918-16077-17176-17703-18039-18483-18552-19227-19936-20357-20826-21770-22854-23242'), ('[X] unofficial debates dis ferocious deadlines436380 copyright [Y]', 0.0967741935483871, 'R-0-25-518-639-1450-2007-2222')}
 
-        print(template_set)
+        template_set = [([13075, 19850, 14545, 39979, 22671, 6471, 33596, 47805], 0.0, 'R-0'), ([13075, 38200, 14545, 39979, 29756, 6471, 33596, 47805], 0.0, 'R-0-3-7'), ([43681, 38200, 37471, 39979, 29756, 6471, 33596, 47805], 0.0, 'R-0-3-7-12-7'), ([43681, 37331, 37471, 3834, 29756, 6471, 33596, 47805], 0.0, 'R-0-3-7-12-7-2-7'), ([43681, 37331, 37471, 3834, 29756, 26272, 42935, 47805], 0.0, 'R-0-3-7-12-7-2-7-29-29'), ([9743, 37331, 37471, 3834, 29756, 26272, 42935, 47805], 0.0, 'R-0-3-7-12-7-2-7-29-29-4-10'), ([43560, 37331, 37471, 3834, 29756, 6740, 42935, 47805], 0.0, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2'), ([43560, 12910, 37471, 3834, 29756, 6740, 12493, 47805], 0.0, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25'), ([43560, 12910, 37471, 19275, 29756, 6740, 31743, 47805], 0.0, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27'), ([43560, 12910, 37471, 19275, 29756, 6740, 44899, 30479], 0.0, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35'), ([34923, 12910, 37471, 19275, 29756, 6740, 48545, 30479], 0.03225806451612903, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3'), ([34923, 12910, 6135, 19275, 29756, 6740, 49955, 30479], 0.03225806451612903, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2'), ([34923, 32317, 6135, 19275, 29756, 6740, 49955, 30479], 0.03225806451612903, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8'), ([34923, 13287, 6135, 19275, 29756, 6740, 6592, 30479], 0.03225806451612903, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8'), ([34923, 13287, 6135, 19275, 29756, 6740, 49762, 22402], 0.11290322580645161, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20'), ([153, 13287, 6135, 19275, 22178, 6740, 49762, 22402], 0.14516129032258066, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2'), ([153, 11444, 891, 19275, 22178, 6740, 49762, 22402], 0.1774193548387097, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8'), ([153, 2824, 891, 19275, 22178, 6740, 49762, 22402], 0.1774193548387097, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5'), ([153, 2824, 891, 19275, 22178, 6740, 19080, 22402], 0.1935483870967742, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24'), ([153, 2824, 891, 35477, 22178, 6740, 19080, 22402], 0.1935483870967742, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31'), ([153, 31444, 20437, 35477, 22178, 6740, 19080, 22402], 0.14516129032258066, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14'), ([153, 31444, 20437, 198, 22178, 6159, 19080, 22402], 0.1774193548387097, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15'), ([153, 31444, 20437, 198, 22178, 6159, 49556, 22402], 0.22580645161290322, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26'), ([12195, 18208, 20437, 198, 22178, 6159, 49556, 22402], 0.24193548387096775, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4'), ([1596, 18208, 9951, 198, 22178, 6159, 49556, 22402], 0.24193548387096775, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9'), ([39685, 18208, 9951, 198, 22178, 6159, 49556, 22402], 0.22580645161290322, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11'), ([37214, 18208, 9951, 23922, 22178, 6159, 49556, 22402], 0.24193548387096775, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11'), ([4245, 18208, 24629, 23922, 22178, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8'), ([4245, 28662, 24629, 23076, 22178, 6159, 49556, 22402], 0.2903225806451613, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10'), ([4245, 28662, 24629, 23076, 22178, 6159, 49556, 22402], 0.2903225806451613, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10'), ([4245, 28662, 24629, 2807, 22178, 6159, 49556, 22402], 0.2903225806451613, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30'), ([4245, 9444, 24629, 2807, 22178, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3'), ([4245, 20561, 24629, 2807, 22178, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4'), ([4245, 20561, 24629, 2807, 22178, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4'), ([4245, 37959, 24629, 2807, 22178, 6159, 49556, 22402], 0.2903225806451613, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6'), ([4245, 28251, 24629, 2807, 22178, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3'), ([4245, 28251, 24629, 2807, 22178, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3'), ([4245, 28251, 24629, 2807, 22245, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25'), ([4245, 28251, 24629, 2807, 24741, 6159, 49556, 22402], 0.3225806451612903, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14'), ([4245, 28251, 24629, 22830, 30012, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19'), ([4245, 28251, 24629, 22830, 30012, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19'), ([4245, 28251, 24629, 22830, 30012, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19'), ([4245, 28251, 24629, 22830, 48174, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3'), ([8166, 28251, 24629, 22830, 48174, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3-4'), ([18817, 28251, 24629, 22830, 48174, 6159, 49556, 22402], 0.3064516129032258, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3-4-6-4'), ([46843, 28251, 24629, 22830, 48174, 6159, 49556, 22402], 0.3387096774193548, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3-4-6-4-10-5'), ([46843, 28251, 24629, 22830, 48174, 6159, 49556, 22402], 0.3387096774193548, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3-4-6-4-10-5'), ([46843, 28251, 24629, 22830, 48174, 6159, 49556, 22402], 0.3387096774193548, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3-4-6-4-10-5'), ([46843, 28251, 24629, 22830, 48174, 6159, 49556, 22402], 0.3387096774193548, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3-4-6-4-10-5'), ([28989, 28251, 24629, 26608, 48174, 6159, 49556, 22402], 0.27419354838709675, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3-4-6-4-10-5-19-3'), ([28989, 28251, 24629, 25756, 48174, 6159, 49556, 22402], 0.3225806451612903, 'R-0-3-7-12-7-2-7-29-29-4-10-32-2-19-25-12-27-29-35-29-3-21-2-3-8-28-8-24-20-26-2-19-8-3-5-19-24-16-31-10-14-6-15-26-5-4-9-9-7-11-16-11-2-8-2-10-30-19-3-9-4-6-14-3-8-25-4-14-4-19-3-4-6-4-10-5-19-3-17')]
 
-        promptSearch.save(template_set, 1, os.path.join(args.output, 'template_search.tsv'))
+        # print(template_set)
+
+        # promptSearch.save(template_set, 1, os.path.join(args.output, 'template_search.tsv'))
 
         # add random templates
-        avg_prompt_len = sum([len(model.tokenizer.encode(t[0].replace('[X]','').replace(' [Y]',''))) for t in template_set])/len(template_set)
+        avg_prompt_len = sum([len(t[0]) for t in template_set])/len(template_set)
         print("Average len: ", avg_prompt_len)
 
         # adding random prompts
-        random_prompts = set([('[X]'+model.tokenizer.decode([random.randint(0, model.get_vocab_size()-1) for _ in range(int(avg_prompt_len))])+' [Y]', 666.0, 'R') for z in range(10)])
-        template_set.update(random_prompts)
+        random_prompts = [([random.randint(0, model.get_vocab_size()-1) for _ in range(int(avg_prompt_len))], 666.0, 'R') for z in range(10)]
+        template_set += random_prompts
 
         # adding unrelated prompts
-        unrelated_prompts = [random.sample(paraphrases[r], 1)[0] for r in paraphrases]
-        unrelated_prompts = set([(t, 0.0, 'U') for t in unrelated_prompts])
-        template_set.update(unrelated_prompts)
+        unrelated_prompts = [promptSearch.template2tokens(random.sample(paraphrases[r], 1)[0]) for r in paraphrases]
+        unrelated_prompts = [(t, 0.0, 'U') for t in unrelated_prompts]
+        template_set += unrelated_prompts
 
         # adding human (related) templates
-        human_templates = [(t, 666.0, 'H') for t in paraphrases[relation]]
-        template_set.update(human_templates)
+        human_templates = [(promptSearch.template2tokens(t), 666.0, 'H') for t in paraphrases[relation]]
+        template_set += human_templates
 
-        print(f"[{relation}] Templates:", template_set)
+        # adding machine random
+        # randomPromptSearch = RandomPairPromptSearch(model, 50, 10, n_rounds=2, verbose=True)
+        # todo later
+
+        # print(f"[{relation}] Templates:", template_set)
         df_templates = pd.DataFrame(template_set, columns=['template', 'accuracy', 'tid'])# ,'h_agreement'])
+        df_templates['str_template'] = df_templates.apply(lambda row: promptSearch.tokens2template(row['template']), axis=1)
+
         # keep topk most accurates
         # df_templates = df_templates.nlargest(5, 'accuracy')
         # remove template with low accuracy
         # df_templates = df_templates[df_templates['accuracy'] > 0.1]
         # compute PPL for each template
-        tid2n = {'U':-1, 'R':-2}
-        df_templates['ppl'] = model.compute_ppl_from_text_batch(
-            [t.replace('[X]','').replace('[Y]','').strip() for t in df_templates['template'].tolist()]
+        tid2n = {'U':-1, 'R':-2, 'H':-3}
+        df_templates['ppl'] = model.compute_ppl_from_tokens_batch(
+            df_templates['template'].tolist(), None
             ).tolist()
+        # df_templates['ppl'] = df_templates.apply(lambda row: model.compute_ppl_from_tokens_batch(torch.tensor(row['template']), torch.ones(len(row['template']))), axis=1)
         df_templates['n_mutations'] = df_templates.apply(lambda row: (len(row['tid'].split('-'))-2) if '-' in row['tid'] else tid2n[row['tid']], axis=1)
-        
+        print(df_templates)
         # print
         print(df_templates.sort_values(by='ppl').to_string(index=False))
         
@@ -165,117 +186,243 @@ if __name__ == "__main__":
         g.figure.savefig(f'acc_ppl_{model_name_parse}_{relation}.png')
         plt.clf()
 
-        # templates
-        templates = df_templates['template'].to_list()
-        original_template = df_templates[df_templates['n_mutations']==0].sample(1)['template'].item()
-        print("Original template: ", original_template)
         # lama
         lama_samples = lamaset.sample_relation(relation, 'dev', 10)
+
+        # filter machine to only keep to last ones
+        df_templates['type'] = df_templates.apply(lambda row: 'M' if 'R-' in row['tid'] else row['tid'], axis=1)
+        cond_last_machine = df_templates['n_mutations']>df_templates['n_mutations'].quantile(0.90)
+        cond_not_machine = df_templates['type']!='M'
+        df_templates = df_templates[cond_last_machine | cond_not_machine]
+
+        # templates
+        templates = df_templates['template'].to_list()
+        original_template = df_templates[df_templates['tid']=='H'].sample(1)['template'].item()
+        print("Original template: ", original_template)
         
-        # prepare to extract kn neurones
-        kn_act_buffer = model.enable_output_knowledge_neurons()
-        # same for extracting mlp output
-        mlp_out_buffer = model.enable_output_mlp_out()
-
         df_analyse_full = []
-        for j in range(5):
-            # randomly choose a subject/object pair. Then, for each template, print the per layer intermediate prediction
-            test_pair = lama_samples[j]
-            token_gold = model.tokenizer.encode(test_pair[1])[0]
-            print(f'\n[{test_pair[0]}, {test_pair[1]}]')
+        models = {
+            'trained': model,
+            'untrained': CausalLanguageModel(
+                model_name,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                fast_tkn=True if not ('opt' in model_name) else False, #because of a bug in OPT
+                fp16=args.fp16,
+                padding_side='left', untrained=True)
+            }
+        for (train_mode, this_model) in models.items():
+            # prepare to extract kn neurones
+            kn_act_buffer = this_model.enable_output_knowledge_neurons()
+            # same for extracting mlp and attn output
+            mlp_out_buffer = this_model.enable_output_mlp_out()
+            attn_out_buffer = this_model.enable_output_attn_out()
+            for j in range(5):
+                # randomly choose a subject/object pair. Then, for each template, print the per layer intermediate prediction
+                test_pair = lama_samples[j]
+                token_gold = this_model.tokenizer.encode(test_pair[1])[0]
+                print(f'\n[{test_pair[0]}, {test_pair[1]}]')
 
-            """
-            Extract intermediate predictions
-            """
-            original_intermediate_preds, original_intermediate_probs, original_intermediate_reps, original_activations = forward_extract_from_pair(model, [original_template, ], test_pair, kn_act_buffer)
-            all_intermediate_preds, all_intermediate_probs, all_intermediate_reps, all_activations = forward_extract_from_pair(model, templates, test_pair, kn_act_buffer)
-
-            df_analyse_pair = []
-            for layer in range(model.get_nb_layers()): 
-                df_analyse = df_templates.copy()
-                df_analyse['layer'] = [layer,] * len(df_analyse)
-                # compare with original prompt
-                df_analyse['d_ori_rep'] = [(original_intermediate_reps[0,layer]-all_intermediate_reps[i, layer]).abs().sum().item() for i in range(len(templates))]
-                df_analyse['d_ori_prob'] = [kl_div(torch.log(all_intermediate_probs[i, layer]), original_intermediate_probs[0,layer], log_target=False).item() for i in range(len(templates))]
-                # compare with previous rep
-                df_analyse['d_previous'] = [(all_intermediate_reps[i, layer-1]-all_intermediate_reps[i, layer]).abs().sum().item() for i in range(len(templates))] if layer>0 else [0,]*len(templates)
-                df_analyse['d_previous_prob'] = [kl_div(torch.log(all_intermediate_probs[i, layer-1]),all_intermediate_probs[i, layer]).item() for i in range(len(templates))] if layer>0 else [0,]*len(templates)
-                # probabilty dynamic
-                df_analyse['p_gold'] = [all_intermediate_probs[i, layer, token_gold].item() for i in range(len(templates))]
-                df_analyse['p_max'] = [all_intermediate_probs[i, layer].max().item() for i in range(len(templates))]
-                df_analyse['p_pred'] = [all_intermediate_probs[i, layer, torch.argmax(all_intermediate_probs[i, -1])].item() for i in range(len(templates))]
-                # measure the norm
-                df_analyse['h_norm'] = [torch.linalg.norm(all_intermediate_reps[i, layer]).item() for i in range(len(templates))]             
-                # knowledge neurones
-                df_analyse['d_ori_kn'] = [(original_activations[0,layer]-all_activations[i, layer]).abs().sum().item() for i in range(len(templates))]
-                df_analyse['norm_kn'] = [torch.linalg.norm(all_activations[i, layer]).item() for i in range(len(templates))]
-
-                df_analyse_pair.append(df_analyse.copy())
-            df_analyse_pair = pd.concat(df_analyse_pair)
-            df_analyse_pair['instance'] = [test_pair[0], ] * len(df_analyse_pair)
-            df_analyse_full.append(df_analyse_pair.copy())
+                """
+                Extract intermediate predictions
+                """
+                original_intermediate_preds, original_intermediate_probs, original_intermediate_reps, original_activations, original_mlp, original_mlp_pred, original_attn, original_attn_pred = forward_extract_from_pair(this_model, [original_template, ], test_pair, kn_act_buffer)
+                all_intermediate_preds, all_intermediate_probs, all_intermediate_reps, all_activations, all_mlp, all_mlp_pred, all_attn, all_attn_pred = forward_extract_from_pair(this_model, templates, test_pair, kn_act_buffer)
+                df_analyse_pair = []
+                for layer in range(this_model.get_nb_layers()): 
+                    df_analyse = df_templates.copy()
+                    df_analyse['target'] = f'{test_pair[0]}_{test_pair[1]}'
+                    df_analyse['layer'] = [layer,] * len(df_analyse)
+                    df_analyse['train_mode'] = [train_mode,] * len(df_analyse)
+                    # compare with original prompt
+                    df_analyse['d_ori_rep'] = [(original_intermediate_reps[0,layer]-all_intermediate_reps[i, layer]).abs().sum().item() for i in range(len(templates))]
+                    df_analyse['d_ori_prob'] = [kl_div(torch.log(all_intermediate_probs[i, layer]), original_intermediate_probs[0,layer], log_target=False, reduction="batchmean").item() for i in range(len(templates))]
+                    df_analyse['csn_ori_rep'] = [cosine_similarity(all_intermediate_reps[i, layer].float(),original_intermediate_reps[0,layer].float(), dim=-1).item() for i in range(len(templates))]
+                    # compare with previous rep
+                    df_analyse['d_previous'] = [(all_intermediate_reps[i, layer-1]-all_intermediate_reps[i, layer]).abs().sum().item() for i in range(len(templates))] if layer>0 else [0,]*len(templates)
+                    df_analyse['d_previous_prob'] = [kl_div(torch.log(all_intermediate_probs[i, layer-1]),all_intermediate_probs[i, layer], reduction="batchmean").item() for i in range(len(templates))] if layer>0 else [0,]*len(templates)
+                    # probabilty dynamic
+                    df_analyse['p_gold'] = [all_intermediate_probs[i, layer, token_gold].item() for i in range(len(templates))]
+                    df_analyse['p_max'] = [all_intermediate_probs[i, layer].max().item() for i in range(len(templates))]
+                    df_analyse['p_pred'] = [all_intermediate_probs[i, layer, torch.argmax(all_intermediate_probs[i, -1])].item() for i in range(len(templates))]
+                    # measure the norm
+                    df_analyse['h_norm'] = [torch.linalg.norm(all_intermediate_reps[i, layer]).item() for i in range(len(templates))]             
+                    # knowledge neurones
+                    df_analyse['d_ori_kn'] = [(original_activations[0,layer]-all_activations[i, layer]).abs().sum().item() for i in range(len(templates))]
+                    df_analyse['csn_ori_kn'] = [cosine_similarity(original_activations[0,layer].float(),all_activations[i, layer].float(), dim=-1).item() for i in range(len(templates))]
+                    df_analyse['norm_kn'] = [torch.linalg.norm(all_activations[i, layer]).item() for i in range(len(templates))]
+                    # intermediate pred
+                    df_analyse['intermediate_pred'] = [preds.split('\t')[layer] for preds in all_intermediate_preds]
+                    # mlp out
+                    df_analyse['mlp_pred'] = [preds.split('\t')[layer] for preds in all_mlp_pred]
+                    df_analyse['csn_previous_mlp'] = [cosine_similarity(all_mlp[i, layer-1].float(),all_mlp[i, layer].float(), dim=-1).item() for i in range(len(templates))] if layer>0 else [0,]*len(templates)
+                    df_analyse['csn_ori_mlp'] = [cosine_similarity(all_mlp[i, layer].float(),original_mlp[0, layer].float(), dim=-1).item() for i in range(len(templates))]
+                    # attn out
+                    df_analyse['attn_pred'] = [preds.split('\t')[layer] for preds in all_attn_pred]
+                    df_analyse['csn_previous_attn'] = [cosine_similarity(all_attn[i, layer-1].float(),all_attn[i, layer].float(), dim=-1).item() for i in range(len(templates))] if layer>0 else [0,]*len(templates)
+                    df_analyse['csn_ori_attn'] = [cosine_similarity(all_attn[i, layer].float(),original_attn[0, layer].float(), dim=-1).item() for i in range(len(templates))]
+                    df_analyse_pair.append(df_analyse.copy())
+                df_analyse_pair = pd.concat(df_analyse_pair)
+                df_analyse_pair['instance'] = [test_pair[0], ] * len(df_analyse_pair)
+                df_analyse_full.append(df_analyse_pair.copy())
         df_analyse_full = pd.concat(df_analyse_full).reset_index()
         print(df_analyse_full)
         df_analyse_full.to_csv('compare_df.tsv', sep='\t')
 
+        # df_analyse_full = pd.read_csv('compare_df.tsv', sep='\t')\
+        """
+        Intermediate preds
+        """
+        text = '' 
+        for target in df_analyse_full['target'].unique():
+            text += f"\nTarget: {target}"
+            for str_template in df_analyse_full['str_template'].unique(): 
+                text += f"\n\tTemplate: {str_template}"
+                try:
+                    this_df = df_analyse_full.query(f'target == "{target}"').query(f'str_template == "{str_template}"').query('train_mode == "trained"')
+                    text += '\n\t\t'+repr(','.join(this_df[['layer', 'intermediate_pred']].drop_duplicates().sort_values(by='layer')['intermediate_pred'].to_list()))
+                except SyntaxError:
+                    text += '\n\t\tSyntaxError'
+                    continue
+        with open('intermediate_preds.txt', 'w') as f:
+            f.write(text)
+        """
+        MLP preds
+        """
+        text = '' 
+        for target in df_analyse_full['target'].unique():
+            text += f"\nTarget: {target}"
+            for str_template in df_analyse_full['str_template'].unique(): 
+                text += f"\n\tTemplate: {str_template}"
+                try:
+                    this_df = df_analyse_full.query(f'target == "{target}"').query(f'str_template == "{str_template}"').query('train_mode == "trained"')
+                    text += '\n\t\t'+repr(','.join(this_df[['layer', 'mlp_pred']].drop_duplicates().sort_values(by='layer')['mlp_pred'].to_list()))
+                except SyntaxError:
+                    text += '\n\t\tSyntaxError'
+                    continue
+
+        with open('mlp_preds.txt', 'w') as f:
+            f.write(text)
+        """
+        Attn preds
+        """
+        text = '' 
+        for target in df_analyse_full['target'].unique():
+            text += f"\nTarget: {target}"
+            for str_template in df_analyse_full['str_template'].unique(): 
+                text += f"\n\tTemplate: {str_template}"
+                try:
+                    this_df = df_analyse_full.query(f'target == "{target}"').query(f'str_template == "{str_template}"').query('train_mode == "trained"')
+                    text += '\n\t\t'+repr(','.join(this_df[['layer', 'attn_pred']].drop_duplicates().sort_values(by='layer')['attn_pred'].to_list()))
+                except SyntaxError:
+                    text += '\n\t\tSyntaxError'
+                    continue
+
+        with open('attn_preds.txt', 'w') as f:
+            f.write(text)
+        """
+        distance with previous layer MLP
+        """
+        g = sns.relplot(data=df_analyse_full, x='layer', y='csn_previous_mlp', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
+        g.figure.savefig(f'csn_previous_mlp_{model_name_parse}_{relation}.png')
+        plt.clf()
+        """
+        distance with original MLP
+        """
+        g = sns.relplot(data=df_analyse_full, x='layer', y='csn_ori_mlp', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
+        g.figure.savefig(f'csn_ori_mlp_{model_name_parse}_{relation}.png')
+        plt.clf()
+        """
+        distance with previous layer attn
+        """
+        g = sns.relplot(data=df_analyse_full, x='layer', y='csn_previous_attn', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
+        g.figure.savefig(f'csn_previous_attn_{model_name_parse}_{relation}.png')
+        plt.clf()
+        """
+        distance with original attn
+        """
+        g = sns.relplot(data=df_analyse_full, x='layer', y='csn_ori_attn', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
+        g.figure.savefig(f'csn_ori_attn_{model_name_parse}_{relation}.png')
+        plt.clf()
+        """
+        distance with original res
+        """
+        g = sns.relplot(data=df_analyse_full, x='layer', y='csn_ori_rep', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
+        g.figure.savefig(f'csn_ori_rep_{model_name_parse}_{relation}.png')
+        plt.clf()
+        """
+        ppl
+        """
+        g = sns.barplot(data=df_analyse_full, x='type', y="ppl")
+        g.set(yscale="log")
+        g.figure.savefig(f'ppl_{model_name_parse}_{relation}.png')
+        plt.clf()
         """
         distance between ori anfd mutated in residual stream
         """
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='d_ori_rep', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='d_ori_rep', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'd_ori_rep_{model_name_parse}_{relation}.png')
         plt.clf()
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='d_ori_prob', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='d_ori_prob', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'd_ori_prob_{model_name_parse}_{relation}.png')
         plt.clf()
         """
         distance with previous layer residual stream
         """
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='d_previous', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='d_previous', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'd_prev_rep_{model_name_parse}_{relation}.png')
         plt.clf()
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='d_previous_prob', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='d_previous_prob', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'd_prev_prob_{model_name_parse}_{relation}.png')
         plt.clf()
         """
         Evolution of p_gold
         """
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='p_gold', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='p_gold', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'p_gold_{model_name_parse}_{relation}.png')
         plt.clf()
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='p_gold', hue='accuracy')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='p_gold', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'p_gold_2_{model_name_parse}_{relation}.png')
         plt.clf()
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='p_max', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='p_max', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'p_max_{model_name_parse}_{relation}.png')
         plt.clf()
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='p_pred', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='p_pred', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'p_pred_{model_name_parse}_{relation}.png')
         plt.clf()
         """
         Evolution of the residual stream's norm
         """
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='h_norm', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='h_norm', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'h_norm_{model_name_parse}_{relation}.png')
         plt.clf()
         """
         knowledge neurones
         """
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='norm_kn', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='norm_kn', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'norm_kn_{model_name_parse}_{relation}.png')
         plt.clf()
-        g = sns.lineplot(data=df_analyse_full, x='layer', y='d_ori_kn', hue='n_mutations')#, style='template')
-        g.set_yscale('log')
+        g = sns.relplot(data=df_analyse_full, x='layer', y='d_ori_kn', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
         g.figure.savefig(f'd_ori_kn_{model_name_parse}_{relation}.png')
+        plt.clf()
+        g = sns.relplot(data=df_analyse_full, x='layer', y='csn_ori_kn', hue='type', col="train_mode", kind="line")#, style='template')
+        g.set(yscale="log")
+        g.figure.savefig(f'csn_ori_kn_{model_name_parse}_{relation}.png')
         plt.clf()
         exit()
         
