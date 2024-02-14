@@ -10,6 +10,19 @@ from src.data.dataset_loader import load_hf_dataset_with_sampling
 from src.model.causal_lm import CausalLanguageModel
 from src.utils.init_utils import init_device, init_random_seed
 
+import pandas as pd
+
+model_name = "EleutherAI/pythia-12b-deduped"
+model = CausalLanguageModel(model_name, device='cpu', fast_tkn=True, fp16=True)
+amapper = LMamap(model=model,device='cpu', mode=['input'], fp16=True)
+amapper.load('/data/amap.1337/', 'wikipedia,20220301.en,train' ,15)
+with open('/home/ckervadec/unique_tokens.csv', 'r') as f:
+    lines = f.read().split('\n')
+    dany_tokens = [l.split(',')[-1] for l in lines if len(l)!=0]
+    # print(dany_tokens)
+
+amapper.filter_amap(dany_tokens)
+
 def parse_args():
     parser = argparse.ArgumentParser(description='AMAP')
 
@@ -37,23 +50,28 @@ def parse_args():
 if __name__ == "__main__":
 
     args = parse_args()
-    
+
     random_seed = init_random_seed(args.seed)
     init_device(args.device)
 
     model_name = args.model_name
     model = CausalLanguageModel(
         model_name,
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device=args.device,
         fast_tkn=True if not ('opt' in model_name) else False, #because of a bug in OPT
         fp16=args.fp16)
 
     mode = ['input', 'output']
 
     amapper = LMamap(model=model,
-                     device=args.device,
-                     mode=mode,
-                     fp16=args.fp16)
+                        device=args.device,
+                        mode=mode,
+                        fp16=args.fp16)
+
+with open('/home/ckervadec/unique_tokens.csv', 'r') as f:
+    lines = f.read().split('\n')
+    dany_tokens = [l.split(',')[-1] for l in lines if len(l)!=0]
+    # print(dany_tokens)
 
     if args.load != '':
         print('[AMAP] Loading an existing amap...')
@@ -67,9 +85,29 @@ if __name__ == "__main__":
         if positions are tracked (check flags in amapper.special_tracking), the position id correspond to:
         position i = amapper.position_offset + i
         """
-        dead_mask = amapper.identify_dead_units()
-        act_hist = amapper.get_activation_histogram(aggregation='mean')
-        print(act_hist)
+        amapper.filter_amap(dany_tokens)
+        print(amapper.amap)
+        df_amap = amapper.get_df_amap(string=True)   
+        # for t in dany_tokens:
+        #     print(t)
+        #     print(model.tokenizer.encode(t, add_special_tokens=False))
+        #     print('---')
+        # dany_tokens = [model.tokenizer.encode(t, add_special_tokens=False) for t in set(dany_tokens)]
+        # print(dany_tokens)
+        save_name = "./filtered_"+model_name.split('/')[-1]+'.parquet.gzip'
+        # remove dupplicate columns
+        df_amap = df_amap.loc[:,~df_amap.columns.duplicated()]
+        # convert to float32
+        half_floats = df_amap.select_dtypes(include="float16")
+        df_amap[half_floats.columns] = half_floats.astype("float32")
+        # df_amap.to_csv('temp_amap.csv')
+        print(df_amap)
+        df_amap.to_parquet(save_name, compression='gzip')
+
+
+        # dead_mask = amapper.identify_dead_units()
+        # act_hist = amapper.get_activation_histogram(aggregation='mean')
+        # print(act_hist)
 
         
 
