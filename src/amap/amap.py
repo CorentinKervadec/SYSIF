@@ -12,6 +12,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 
+
 class LMamap:
     def __init__(self, model: CausalLanguageModel, mode=['input', 'output'], device='cuda', fp16=True) -> None:
         # amap
@@ -26,6 +27,7 @@ class LMamap:
         self.model = model
         self.kn_act_buffer = model.enable_output_knowledge_neurons()
         self.vocab_list = model.get_vocab()
+        print("Vocab size: ", len(self.vocab_list))
         self.n_layers = model.get_nb_layers()
         self.n_units = model.get_nb_knowledge_neurons(layer_id=0)
 
@@ -89,6 +91,9 @@ class LMamap:
         # do it one by one to get the correct tokens IDs (otherwise the order is random)
         [self.model.tokenizer.add_special_tokens({'additional_special_tokens': [positional_tokens[i]]}) for i in range(amap_pos_dim[0])]
         if 'position' not in self.special_tracking: self.special_tracking.append('position')
+        # also add the token to the vocab list
+        self.vocab_list += positional_tokens
+        print("Vocab size: ", len(self.vocab_list))
 
 
     def update_token_unit(self, unit_tokens, kn_act, layer, unique_id, token_ids, tokens_count, old_token_count):
@@ -284,20 +289,49 @@ class LMamap:
         warn = self.sanity_check()
         if warn != '': logging.warning(f'The loaded files contain errors: {warn}')
         print('[AMAP] Done :-)')
+        print("Vocab size: ", len(self.vocab_list))
 
-    def get_df_amap(self):
+    def filter_amap(self, filtering_tokens):
+        # filtering tokens are strings
+        # token_list = [self.model.tokenizer.decode(i) for i in range(len(self.model.tokenizer))]
+        token_list = self.vocab_list
+        mask = [t in filtering_tokens for t in token_list] # for each token, True if it is in the list
+        print('[AMAP] Filtering, nb valid tokens: ', sum(mask))
+        filtered_amap = {}
+        print('[AMAP] filtering the AMAP')
+        for m in self.mode:
+            filtered_amap[m] = {}
+            for l in reversed(range(self.n_layers)): # reverse, to avoid issue when deleteting elements
+                filtered_amap[m][l] = self.amap[m][l][mask].t().clone()
+                del self.amap[m][l] # free memory
+                print(f'Layer {l}, mode {m}: done!')
+        del self.amap
+        new_vocab_idx = [(i, token_list[i]) for i,m in enumerate(mask) if m]
+        # new_vocab_idx = [(self.vocab_list.index(t), t) for i, t in enumerate(filtering_tokens) if t in self.vocab_list]
+        new_vocab_idx = sorted(new_vocab_idx, key=lambda x: x[0])
+        print(new_vocab_idx)
+        self.vocab_list = [t[1] for t in new_vocab_idx]
+        self.amap = filtered_amap
+        print('[AMAP] Filtering done!')
+        print("Vocab size: ", len(self.vocab_list))
+
+    def get_df_amap(self, string=True):
         """
         Transform the amap into a daframe
         """
         df_list = []
-        token_list = [self.model.tokenizer.decode(i) for i in range(len(self.model.tokenizer))]
+        if string:
+            token_list = self.vocab_list
+        else:
+            print("not implemented")
+            exit(0)
         for m in self.mode:
             for l in range(self.n_layers):
-                df_temp = pd.DataFrame(self.amap[m][l].t(), columns=token_list)
+                df_temp = pd.DataFrame(self.amap[m][l], columns=token_list)
                 df_temp['#unit'] = [f'{l}_{i}' for i in range(self.n_units)]
                 df_temp['#mode'] = [m,] * self.n_units
                 df_temp['#layer'] = [l,] * self.n_units
-                df_temp['#mean'] = self.amap[m][l].t().mean(-1).tolist()
+                df_temp['#mean'] = self.amap[m][l].mean(-1).tolist()
                 # df_temp['#max'] = self.amap[m][l].t().max(-1).tolist()
                 df_list.append(df_temp)
         df_amap = pd.concat(df_list)
