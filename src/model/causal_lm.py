@@ -190,6 +190,24 @@ class CausalLanguageModel:
         all_attn_pred = '\t'.join(all_attn_pred)
         return all_intermediate_pred, all_intermediate_prob, all_intermediate_rep, all_activations, all_mlp, all_mlp_pred, all_attn, all_attn_pred
 
+    def instant_probing(self, input_text):
+        """
+        Get many intermediate representation and stats given one sentence as input
+        allow fast instance-based exploration
+        """
+        self.enable_output_mlp_out()
+        self.enable_output_attn_out()
+        self.enable_output_hidden_states()
+
+        output = self.forward_pass_nograd(input_text)[0]
+        residuals = [output.hidden_states[i].squeeze()[-1].detach().clone().cpu() for i in range(self.get_nb_layers())]
+        attentions = [self.attn_out_buffer[i].squeeze()[-1].detach().clone().cpu() for i in range(self.get_nb_layers())] # squeeze works because we have batch size of one
+        mlps = [self.mlp_out_buffer[i][-1].detach().clone().cpu() for i in range(self.get_nb_layers())]
+
+        return residuals, attentions, mlps
+
+
+
     def compute_ppl_from_tokens_batch(self, input_ids, attention_mask):
         if attention_mask is None:
             # pad and create the attention mask
