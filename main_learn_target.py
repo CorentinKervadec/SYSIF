@@ -81,7 +81,8 @@ if __name__ == "__main__":
             human_template = [json.loads(f.readlines()[0])['template'],]
         print("Initial random template: ", random_template)
         print("Initial human template: ", human_template)
-        savepath = os.path.join(args.output,f'target_baseline/disc-prompt-search_{model_name_parse}_{relation}_{random_seed}_random.tsv') 
+        savepath = os.path.join(args.output,f'disc-prompt-search_{model_name_parse}_{relation}_{random_seed}_random.tsv') 
+        # savepath = os.path.join(args.output,f'target_baseline/disc-prompt-search_{model_name_parse}_{relation}_{random_seed}_random.tsv')
         autoprompt.train(random_template, target_dataset, relation, args.n_iterations_max, args.batch_size, savepath)
 
 
