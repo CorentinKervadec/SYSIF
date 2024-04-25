@@ -62,8 +62,8 @@ class CausalLanguageModel:
         output = self.model(**input_ids)
         return (output, input_ids['attention_mask'])
     
-    def forward_pass_from_tkns(self, input_ids, attention_mask):
-        output = self.model(input_ids, attention_mask)
+    def forward_pass_from_tkns(self, input_ids, attention_mask, labels):
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
         return output
 
     def forward_pass_nograd(self, input, tokenize=True):
@@ -71,12 +71,16 @@ class CausalLanguageModel:
             output = self.forward_pass(input, tokenize)    
         return output
     
-    def forward_pass(self, input, tokenize=True):
+    def forward_pass(self, input, labels=None, tokenize=True):
         if tokenize:
+            # label is not available
+            if labels is not None:
+                print("[SYSIF] Labels is not availble with forward pass from str.")
             output = self.forward_pass_from_text(input)
         else:
             input_ids, attention_mask = input
-            output = self.forward_pass_from_tkns(input_ids=input_ids.to(self.device), attention_mask=attention_mask.to(self.device))
+            labels = labels.to(self.device) if labels is not None else None
+            output = self.forward_pass_from_tkns(input_ids=input_ids.to(self.device), attention_mask=attention_mask.to(self.device), labels=labels)
         return output
 
     def get_output_probability(self, input_text):

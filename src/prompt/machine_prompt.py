@@ -15,10 +15,12 @@ import pandas as pd
 from tqdm import tqdm
 import statistics
 from copy import deepcopy
+from nltk.translate.bleu_score import sentence_bleu
 
+LABEL_MASK=-100
 
 class DiscreteGradientPromptSearch():
-    def __init__(self, model: CausalLanguageModel, n_population, num_candidates, n_rounds, verbose=False) -> None:
+    def __init__(self, model: CausalLanguageModel, n_population, num_candidates, n_rounds, verbose=False, n_tkn_generated=1, metric='accuracy') -> None:
         self.model = model
         self.device = model.device
         self._stored_embeddings_gradient = None # the gradient will be store here
@@ -30,7 +32,8 @@ class DiscreteGradientPromptSearch():
         self.n_rounds = n_rounds
         self.p_flip = 0.4
         self.verbose = verbose
-        self.n_tkn_generated=1
+        self.n_tkn_generated=n_tkn_generated
+        self.metric = metric
         # memory
         self.mem_template_info = {} # store the embedding gradient to avoid having to recompute it multiple time
 
@@ -108,7 +111,10 @@ class DiscreteGradientPromptSearch():
     
     def str2tkn(self, string):
         """ inverse of tkn2str """
-        return [int(t) for t in string.split('-')]
+        if string=='':
+            return []
+        else:
+            return [int(t) for t in string.split('-')]
     
     def deduplicate_templates(self, template_candidates):
         population_template_undup = []
@@ -177,7 +183,10 @@ class DiscreteGradientPromptSearch():
                 population_template = [(self.str2tkn(d[0]), d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['gt_prob'].mean().reset_index().values.tolist()]\
                             + [t for t in template_candidates if t[1] is not None]
             else:
-                df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)
+                if self.metric == 'bleu':
+                    df_candidates['correct'] = df_candidates.apply(lambda row: sentence_bleu([row['label']],row['pred']), axis=1)
+                else:
+                    df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)
                 population_template = [(self.str2tkn(d[0]), d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['correct'].mean().reset_index().values.tolist()]\
                             + [t for t in template_candidates if t[1] is not None]
         else:
@@ -209,23 +218,31 @@ class DiscreteGradientPromptSearch():
         len_data = 0
         for batch in batches:
             # prepare input
-            inputs = [torch.tensor(d[0]+d[1]) for d in batch]
-            labels = [torch.tensor(d[2]) for d in batch]
-            labels = [l[0] for l in labels] # only keep the first token. TODO: should we change that?
+            inputs = [torch.tensor(d[0]+d[1]+d[2]) for d in batch] 
             # tokenize and (right) pad the inputs
             max_length = max([len(t) for t in inputs])
             inputs = torch.stack([F.pad(t, (0, max_length-len(t)), value=self.model.tokenizer.pad_token_id) for t in inputs])
             attention_mask = torch.where(inputs.eq(self.model.tokenizer.pad_token_id),0,1)
             # todo: this is hacky
             template_mask = torch.tensor([[0,]*len(d[0])+[1,]*len(d[1])+[0,]*(max_length-(len(d[0])+len(d[1]))) for d in batch]).bool()# 1 if the token is part of the template 0 otherwise
+            # set labels. note: only compute loss for objects (in d[2]) so set other tokens to -100
+            labels = inputs.clone()
+            object_start_idx = torch.tensor([len(d[0]+d[1]) for d in batch])# where the object starts (i.e. what has to be predicted))
+            labels_mask = torch.arange(inputs.shape[1]).unsqueeze(0) < object_start_idx.unsqueeze(1)
+            labels[labels_mask]=LABEL_MASK
             # feed the model with the data
-            output = self.model.forward_pass((inputs.to(self.device), attention_mask.to(self.device)), tokenize=False)
+            output = self.model.forward_pass((inputs.to(self.device), attention_mask.to(self.device)), labels=labels, tokenize=False)
+            loss = output.loss
+            # print("Loss: ", loss)
+            loss.backward()
+            """ This block has been replaced by the intern CausalLM loss
             pred_id = attention_mask.sum(-1)-1 # be sure that padding is 'right'
             pred_logit = output.logits[range(len(batch)), pred_id]
             # compute loss
             loss = self.nll(pred_logit, torch.tensor(labels).to(self.device)).mean()
             # compute gradient of loss vs input embedding
             loss.backward()
+            """
             embeddings_gradient = self.get_embedding_gradient()
             # only keep the gradient of the template tokens
             template_gradient = torch.masked_select(embeddings_gradient, template_mask.unsqueeze(-1).to(self.device)).view(len(batch), len(tokenized_template), embeddings.size(-1))

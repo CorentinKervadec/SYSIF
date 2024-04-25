@@ -51,7 +51,6 @@ def batchify(datalist, batch_size, drop_last, tokenizer=None, output_text=False,
     (otherwise, set pad to none)
     """
     batches = [datalist[i:i+batch_size] for i in range(0,len(datalist),batch_size)]
-
     # drop last to avoid different batch size
     if drop_last:
         if not len(batches[-1]) == batch_size:

@@ -7,14 +7,20 @@ from datasets import load_dataset, Dataset
 import pandas as pd
 
 class LAMAset:
-    def __init__(self, lama_path, portion=1) -> None:
+    def __init__(self, lama_path, portion=1, target=False) -> None:
 
-        self.dataset, self.info = load_lama_local(lama_path)
+        if not target:
+            self.dataset, self.info = load_lama_local(lama_path)
+        else:
+            self.dataset, self.info = load_target_local(lama_path)
         self.dataset = self.dataset.sample(int(len(self.dataset)*portion))
     
     def lamaset_per_relation(self, relation):
         dataset_rel = self.dataset[self.dataset['predicate_id']==relation]
-        info_rel = self.info[self.info['relation']==relation]['sub_label', 'obj_label']
+        if self.info is not None:
+            info_rel = self.info[self.info['relation']==relation]['sub_label', 'obj_label']
+        else:
+            info_rel = None
 
         return dataset_rel, info_rel
     
@@ -67,7 +73,6 @@ class LAMAset:
             this_set = self.dataset[self.dataset['set']==set]
             this_set = this_set[this_set['predicate_id']==relation]
             pair_list = this_set[['sub_label', 'obj_label']].values.tolist()
-            
             filled_data = [(tokenizer.encode(subj), tokenized_template, tokenizer.encode(obj, add_special_tokens=False)) for subj, obj in pair_list]
         
         return filled_data
@@ -120,3 +125,20 @@ def load_lama_local(datapath):
     lama_dataset = pd.concat(lama_dataset)
     lama_info = pd.read_json(path_or_buf=os.path.join(datapath, 'LAMA_relations.jsonl'), lines=True)
     return lama_dataset, lama_info
+
+def load_target_local(datapath):
+    relation_folders = [f for f in list(os.walk(datapath))[-1][-1]]
+    relation_folders = [f for f in relation_folders if (len(f)>0 and f[0]=='T')]
+    target_dataset = []
+    for rel_f in relation_folders:
+        df = pd.read_json(path_or_buf=os.path.join(datapath, rel_f), lines=True)
+        df = df[["obj_label",  "sub_label", "predicate_id"]]
+        df_train = df.copy()
+        df_train['set'] = "train"
+        df_dev = df.copy()
+        df_dev['set'] = "dev"
+        # train and dev are identical
+        target_dataset.append(df_train)
+        target_dataset.append(df_dev)
+    target_dataset = pd.concat(target_dataset)
+    return target_dataset, None
