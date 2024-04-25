@@ -23,7 +23,6 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--seed', type=int, default=-1)
     parser.add_argument('--device', type=str, default='cuda', help='Which computation device: cuda or mps')
-    parser.add_argument('--output_dir', type=str, default='./amap', help='the output directory to store prediction results')
     parser.add_argument('--fp16', action='store_true', help='use half precision')
     parser.add_argument('--output', type=str, default='')
     parser.add_argument('--n_iterations_max', type=int, default=100)
@@ -63,8 +62,8 @@ if __name__ == "__main__":
     print("Starting!")
 
 
-    # relations = target_dataset.get_relations(set='train') if args.relation=='all' else [args.relation,]
-    relations = ['T1',]# 'T1', 'T4', 'T7']
+    relations = target_dataset.get_relations(set='train') if args.relation=='all' else [args.relation,]
+    # relations = ['T1',]# 'T1', 'T4', 'T7']
     # initialise the algo
     autoprompt = DiscreteGradientPromptSearch(model, args.n_population, args.num_candidates, n_rounds=1, verbose=True, n_tkn_generated=10, metric='bleu')
 
