@@ -15,7 +15,7 @@ import pandas as pd
 from tqdm import tqdm
 import statistics
 from copy import deepcopy
-from nltk.translate.bleu_score import sentence_bleu
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
 LABEL_MASK=-100
 
@@ -184,7 +184,7 @@ class DiscreteGradientPromptSearch():
                             + [t for t in template_candidates if t[1] is not None]
             else:
                 if self.metric == 'bleu':
-                    df_candidates['correct'] = df_candidates.apply(lambda row: sentence_bleu([row['label']],row['pred']), axis=1)
+                    df_candidates['correct'] = df_candidates.apply(lambda row: sentence_bleu([row['label']],row['pred'], smoothing_function=SmoothingFunction().method1), axis=1)
                 else:
                     df_candidates['correct'] = df_candidates.apply(lambda row: row['label'] in row['pred'], axis=1)
                 population_template = [(self.str2tkn(d[0]), d[2], d[1]) for d in df_candidates.groupby(['template','tid'])['correct'].mean().reset_index().values.tolist()]\
